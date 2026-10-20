@@ -853,6 +853,9 @@ component PosterAction inherits Rectangle {
 
     callback clicked();
 
+    /// The pointer is on it: the card holds its actions up meanwhile.
+    out property <bool> hovered: touch.has-hover;
+
     width: 28px;
     height: 28px;
     border-radius: self.width / 2;
@@ -900,7 +903,12 @@ component PosterCard inherits Pressable {
     callback revealed();
 
     property <length> inset: 6px;
-    property <bool> actions: root.touchy || root.lit || root.ring || root.project.missing;
+    // The actions' own hover counts as the card's: the pointer on a button
+    // is off the card's touch area, and without this the buttons went at
+    // once, the card lit again, and they came back - a flicker that never
+    // let Remove be pressed.
+    property <bool> actions: root.touchy || root.lit || root.ring || root.project.missing
+        || reveal.hovered || forget.hovered;
 
     label: root.project.name;
     clicked => { root.opened(); }
@@ -980,20 +988,23 @@ component PosterCard inherits Pressable {
             }
         }
 
-        if root.actions: HorizontalLayout {
+        // Always made, and shown or not, so their hover can be read above.
+        HorizontalLayout {
             x: parent.width - self.preferred-width - 8px;
             y: 8px;
             height: 28px;
             width: self.preferred-width;
             spacing: 6px;
+            visible: root.actions;
 
-            if root.can-reveal && !root.project.missing: PosterAction {
+            reveal := PosterAction {
+                visible: root.can-reveal && !root.project.missing;
                 glyph: Glyph.folder;
                 label: I18n.t("start.showInFolder");
                 clicked => { root.revealed(); }
             }
 
-            PosterAction {
+            forget := PosterAction {
                 glyph: Glyph.close;
                 label: I18n.t("start.removeFromList");
                 clicked => { root.forgotten(); }
