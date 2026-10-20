@@ -735,6 +735,12 @@ pub fn shape_window(window: &slint::Window, shape: WindowShape, width: f32, heig
 /// the recorder's own windows are never in the recording.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn exclude_from_capture(window: &WinitWindow) {
+    // Left in the picture when screenshots of the recorder itself are
+    // being taken, for documentation: JDSTUDIO_SCREENSHOTS=1.
+    if std::env::var_os("JDSTUDIO_SCREENSHOTS").is_some() {
+        let _ = window;
+        return;
+    }
     #[cfg(target_os = "windows")]
     {
         use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};

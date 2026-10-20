@@ -167,8 +167,10 @@ component ToolButton inherits Rectangle {
     height: 32px;
     min-width: 32px;
     border-radius: 6px;
-    background: !root.enabled ? transparent
-        : root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+    // A primary button keeps its accent while disabled, dimmed by the
+    // opacity below: on a transparent ground its dark words went unseen.
+    background: root.primary ? (touch.has-hover && root.enabled ? Theme.accent-hover : Theme.accent)
+        : !root.enabled ? transparent
         : root.active ? Theme.launch-raised
         : touch.has-hover ? Theme.launch-raised : transparent;
     border-width: root.active ? 1px : 0px;
