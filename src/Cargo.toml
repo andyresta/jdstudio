@@ -63,7 +63,7 @@ lto = "thin"
 codegen-units = 1
 
 # For trying a change in the window: `cargo dev` (an alias for
-# `cargo run --bin concat --profile quick`, see .cargo/config.toml).
+# `cargo run --bin jdstudio --profile quick`, see .cargo/config.toml).
 # Optimised enough that video plays as it would in release, without the
 # thin LTO and single codegen unit that make a release rebuild a
 # minutes-long relink. Incremental, so a change in one crate is seconds.

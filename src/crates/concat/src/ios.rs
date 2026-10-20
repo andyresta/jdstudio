@@ -560,7 +560,7 @@ fn keep_in_exports(from: &Path) -> Result<String, String> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or(name);
-    Ok(format!("Concat › Exports › {kept}"))
+    Ok(format!("JDStudio › Exports › {kept}"))
 }
 
 /// `name`, or `name (2)`, `name (3)`... until nothing is overwritten.
@@ -609,7 +609,9 @@ fn save_to_photos(path: &Path) -> Result<String, String> {
         status = rx.recv().unwrap_or(0);
     }
     if status != 3 && status != 4 {
-        return Err("Concat may not add to Photos; allow it under Settings, Concat, Photos".into());
+        return Err(
+            "JDStudio may not add to Photos; allow it under Settings, JDStudio, Photos".into(),
+        );
     }
     let url = NSURL::from_file_path(path).ok_or("the export's path is not a file URL")?;
     let change = RcBlock::new(move || {

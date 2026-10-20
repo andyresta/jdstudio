@@ -152,7 +152,7 @@ pub fn catalogue() -> Vec<Tool> {
     vec![
         Tool {
             name: "concat_version",
-            title: "Concat version",
+            title: "JDStudio version",
             description: "What this Concat speaks: the API version, the build, its capabilities, and how this MCP server reaches it (`mcp.mode`: \"window\" when it goes through the open Concat window's server, \"headless\" when it runs the editor engine itself). Call it first if unsure what is available.",
             read_only: true,
             destructive: false,
