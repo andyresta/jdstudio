@@ -106,6 +106,7 @@ export component Seat inherits Rectangle {
             jump-token: Editor.media-jump-token;
 
             import-media => { Editor.import-media(); }
+            record-screen => { Editor.record-screen(); }
             filter-changed(filter) => { Editor.media-filter-changed(filter); }
             sort-changed(index) => { Editor.media-sort-changed(index); }
             floor-pressed => { Editor.blur(); }
@@ -422,6 +423,7 @@ export component Seat inherits Rectangle {
             captions => { Editor.captions(); }
             speak => { Editor.speak(); }
             record-voiceover => { Editor.record-voiceover(); }
+            record-screen => { Editor.record-screen(); }
             add-track(bottom) => { Editor.add-track(bottom); }
             zoom-to-fit(width) => { Editor.zoom-to-fit(width); }
             zoom(factor, anchor) => { Editor.zoom(factor, anchor); }

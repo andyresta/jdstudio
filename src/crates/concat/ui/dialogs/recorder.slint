@@ -1,0 +1,320 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+
+// The screen recorder's sheet: what to record - the whole screen or an
+// area of it, a microphone, a camera - and the button that starts it. The
+// recording itself runs with the window out of the way and a small bar of
+// its own (recorder-windows.slint) to stop it.
+
+import { I18n } from "../i18n.slint";
+import { Theme } from "../theme/theme.slint";
+import { Glyph, Icon } from "../icons.slint";
+import { Button, DialogRow, DialogSection, Modal, Progress } from "../primitives/modal.slint";
+import { SegmentedControl } from "../primitives/segmented-control.slint";
+import { Select } from "../primitives/select.slint";
+import { LevelMeter } from "../primitives/level-meter.slint";
+
+export struct RecorderData {
+    open: bool,
+    /// 0 the whole screen, 1 an area of it.
+    mode: int,
+    /// "1280 × 720 at 40, 120", or empty while no area is picked.
+    area: string,
+    /// Indexes into the device lists; 0 is "None".
+    microphone: int,
+    camera: int,
+    /// 0 for 30 fps, 1 for 60.
+    fps: int,
+    /// The camera's shape, on screen and in the editor: 0 a rectangle,
+    /// 1 rounded corners, 2 a circle.
+    camera-shape: int,
+    /// The device lists are still being read.
+    listing: bool,
+    /// A snapshot is being taken or the recording is starting.
+    busy: bool,
+    error: string,
+    /// The overlay between Stop and the editor: 0 down, 1 finishing the
+    /// files, 2 making the project, 3 laying the clips out.
+    loading: int,
+}
+
+export component RecorderDialog inherits Modal {
+    in property <RecorderData> data;
+    in property <[string]> microphones;
+    in property <[string]> cameras;
+    /// The picked area, cut from the still.
+    in property <image> preview;
+    /// The picked microphone's level, 0..1.
+    in property <float> level;
+
+    callback mode-changed(index: int);
+    callback pick-area();
+    callback microphone-changed(index: int);
+    callback camera-changed(index: int);
+    callback camera-shape-changed(index: int);
+    callback fps-changed(index: int);
+    callback record();
+    callback dismiss();
+
+    property <bool> ready: !root.data.busy && (root.data.mode == 0 || root.data.area != "");
+
+    open: root.data.open;
+    title: I18n.t("recorder.recordScreen");
+    glyph: Glyph.screen;
+    surface-width: 480px;
+
+    closed => { root.dismiss(); }
+
+    VerticalLayout {
+        DialogSection {
+            first: true;
+            title: I18n.t("recorder.capture");
+
+            SegmentedControl {
+                options: [I18n.t("recorder.entireScreen"), I18n.t("recorder.selectArea")];
+                current: root.data.mode;
+                enabled: !root.data.busy;
+                changed(index) => { root.mode-changed(index); }
+            }
+
+            if root.data.mode == 1 && root.data.area == "": Button {
+                block: true;
+                large: true;
+                glyph: Glyph.screen;
+                label: I18n.t("recorder.selectArea");
+                enabled: !root.data.busy;
+                clicked => { root.pick-area(); }
+            }
+
+            // What will be recorded, cut from the still it was picked on.
+            if root.data.mode == 1 && root.data.area != "": HorizontalLayout {
+                spacing: 12px;
+
+                Rectangle {
+                    width: 168px;
+                    height: 96px;
+                    border-radius: 6px;
+                    background: Theme.field;
+                    clip: true;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.preview;
+                        image-fit: contain;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        enabled: !root.data.busy;
+                        clicked => { root.pick-area(); }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+
+                    Text {
+                        text: root.data.area;
+                        color: Theme.fg;
+                        font-size: Theme.fs;
+                        font-family: Theme.font-technical;
+                        wrap: word-wrap;
+                    }
+
+                    Button {
+                        horizontal-stretch: 0;
+                        label: I18n.t("recorder.reselect");
+                        enabled: !root.data.busy;
+                        clicked => { root.pick-area(); }
+                    }
+                }
+            }
+        }
+
+        DialogSection {
+            title: I18n.t("recorder.sources");
+
+            DialogRow {
+                label: I18n.t("recorder.microphone");
+                Select {
+                    options: root.microphones;
+                    current: root.data.microphone;
+                    glyph: Glyph.mic;
+                    placeholder: I18n.t("recorder.lookingForDevices");
+                    enabled: !root.data.listing && !root.data.busy;
+                    changed(index) => { root.microphone-changed(index); }
+                }
+            }
+
+            // What the microphone hears right now: speak, and it moves.
+            if root.data.microphone > 0: DialogRow {
+                label: I18n.t("recorder.level");
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout {
+                        alignment: center;
+                        LevelMeter {
+                            value: root.level;
+                        }
+                    }
+                    Text {
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                        text: root.level > 0.02 ? I18n.t("recorder.hearing") : I18n.t("recorder.speakToTest");
+                        color: root.level > 0.02 ? Theme.fg : Theme.fg-muted;
+                        font-size: Theme.fs-sm;
+                    }
+                }
+            }
+
+            DialogRow {
+                label: I18n.t("recorder.camera");
+                Select {
+                    options: root.cameras;
+                    current: root.data.camera;
+                    glyph: Glyph.camera;
+                    placeholder: I18n.t("recorder.lookingForDevices");
+                    enabled: !root.data.listing && !root.data.busy;
+                    changed(index) => { root.camera-changed(index); }
+                }
+            }
+
+            if root.data.camera > 0: DialogRow {
+                label: I18n.t("recorder.cameraShape");
+                SegmentedControl {
+                    options: [I18n.t("recorder.shapeRectangle"), I18n.t("recorder.shapeRounded"),
+                        I18n.t("recorder.shapeCircle")];
+                    current: root.data.camera-shape;
+                    enabled: !root.data.busy;
+                    changed(index) => { root.camera-shape-changed(index); }
+                }
+            }
+
+            DialogRow {
+                label: I18n.t("recorder.frameRate");
+                SegmentedControl {
+                    options: ["30 fps", "60 fps"];
+                    current: root.data.fps;
+                    enabled: !root.data.busy;
+                    changed(index) => { root.fps-changed(index); }
+                }
+            }
+
+            Text {
+                text: I18n.t("recorder.cameraNote");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            if root.data.error != "": Text {
+                text: root.data.error;
+                color: Theme.danger;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+
+                Button {
+                    label: I18n.t("common.cancel");
+                    clicked => { root.dismiss(); }
+                }
+
+                Button {
+                    primary: true;
+                    glyph: Glyph.screen;
+                    label: I18n.t("recorder.startRecording");
+                    enabled: root.ready;
+                    clicked => { root.record(); }
+                }
+            }
+        }
+    }
+}
+
+// Between Stop and the editor: the whole window covered, saying which step
+// is under way, until the clips are on the lanes - then it fades, and the
+// editor is simply there with the recording in it.
+export component RecorderLoading inherits Rectangle {
+    in property <int> stage;
+
+    property <bool> up: root.stage > 0;
+    // The step last shown, held through the fade so the words do not
+    // change as it goes.
+    property <int> shown: 1;
+    changed stage => {
+        if (root.stage > 0) {
+            root.shown = root.stage;
+        }
+    }
+
+    background: Theme.launch-page;
+    opacity: root.up ? 1 : 0;
+    animate opacity { duration: 260ms; easing: ease-in-out; }
+    visible: self.opacity > 0.01;
+
+    // Nothing behind it can be pressed while it is up.
+    TouchArea { }
+
+    VerticalLayout {
+        alignment: center;
+
+        HorizontalLayout {
+            alignment: center;
+
+            VerticalLayout {
+                width: 360px;
+                spacing: 14px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 56px;
+                        height: 56px;
+                        border-radius: 28px;
+                        background: Theme.launch-raised;
+                        Icon {
+                            glyph: Glyph.screen;
+                            size: 26px;
+                            tint: Theme.accent;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+
+                Text {
+                    horizontal-alignment: center;
+                    text: I18n.t("recorder.preparing");
+                    color: Theme.fg;
+                    font-size: 18px;
+                    font-weight: 600;
+                }
+
+                Text {
+                    horizontal-alignment: center;
+                    text: root.shown == 1 ? I18n.t("recorder.stageFinishing")
+                        : root.shown == 2 ? I18n.t("recorder.stageProject")
+                        : I18n.t("recorder.stageTimeline");
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-lg;
+                }
+
+                Progress {
+                    value: (root.shown - 1) / 3;
+                    ceiling: root.shown / 3;
+                    step: 1500ms;
+                    live: root.up;
+                }
+            }
+        }
+    }
+}

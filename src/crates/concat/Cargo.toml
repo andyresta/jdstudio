@@ -78,6 +78,10 @@ opener = { version = "0.8", features = ["reveal"] }
 # itself on the display winit opened. The same two crates winit draws
 # with, libwayland loaded at run time as winit loads it; libc for the
 # pipe the drop is read through and the poll that waits on it.
+# The screen recorder's bar is kept out of every capture (recorder.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }

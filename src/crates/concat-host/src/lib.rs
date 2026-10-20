@@ -40,6 +40,7 @@ pub mod projects;
 pub mod proxy;
 pub mod record;
 pub mod reverse;
+pub mod screen;
 pub mod session;
 pub mod sounds;
 pub mod stabilize;
