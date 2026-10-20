@@ -14,6 +14,7 @@
 //! The panes move here one at a time from the window's controller; the
 //! export sheet is the first, and the shape the rest follow.
 
+pub mod assistant;
 pub mod captions;
 pub mod export;
 pub mod glide;
@@ -57,6 +58,8 @@ pub enum Msg {
     Voiceover(voiceover::VoiceoverMsg),
     /// To the screen recorder.
     Recorder(recorder::RecorderMsg),
+    /// To the assistant's panel.
+    Assistant(assistant::AssistantMsg),
     /// To the library's Audio page.
     Sounds(sounds::SoundsMsg),
 }

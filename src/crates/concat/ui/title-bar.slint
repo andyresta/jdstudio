@@ -148,6 +148,9 @@ export component TitleBar inherits Rectangle {
     /// A view was picked from the add-panel list.
     callback add-pane(kind: PaneKind);
     callback export-clicked();
+    /// The assistant's panel is showing, and its button was pressed.
+    in property <bool> assistant-open;
+    callback assistant-toggled();
 
     height: 32px;
     // The window's ground, not a panel's: the strip is the frame the panes
@@ -272,6 +275,44 @@ export component TitleBar inherits Rectangle {
             HeaderIconButton {
                 glyph: Glyph.settings;
                 clicked => { root.open-settings(); }
+            }
+        }
+
+        // The assistant: a chat at the editor's right.
+        if !root.minimal: VerticalLayout {
+            alignment: center;
+            padding-left: 4px;
+
+            Rectangle {
+                width: assistant-label.preferred-width + 34px;
+                height: 24px;
+                border-radius: Theme.r-sm;
+                background: root.assistant-open ? Theme.field-active
+                    : assistant-touch.has-hover ? Theme.field-hover : Theme.field;
+                border-width: 1px;
+                border-color: root.assistant-open ? Theme.accent : Theme.line;
+
+                assistant-icon := Icon {
+                    x: 9px;
+                    y: (parent.height - self.height) / 2;
+                    glyph: Glyph.sparkle;
+                    size: 12px;
+                    tint: Theme.accent;
+                }
+
+                assistant-label := Text {
+                    x: assistant-icon.x + assistant-icon.width + 5px;
+                    y: (parent.height - self.height) / 2;
+                    text: I18n.t("assistant.title");
+                    color: Theme.fg;
+                    font-size: Theme.fs;
+                    font-weight: Theme.weight-title;
+                }
+
+                assistant-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.assistant-toggled(); }
+                }
             }
         }
 

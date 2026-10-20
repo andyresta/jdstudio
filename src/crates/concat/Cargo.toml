@@ -78,11 +78,17 @@ opener = { version = "0.8", features = ["reveal"] }
 # itself on the display winit opened. The same two crates winit draws
 # with, libwayland loaded at run time as winit loads it; libc for the
 # pipe the drop is read through and the poll that waits on it.
-# The screen recorder's bar is kept out of every capture (recorder.rs).
+# The screen recorder's bar is kept out of every capture (recorder.rs);
+# the assistant's API keys live in the Credential Manager (assistant/keys.rs).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native"] }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 libc = "0.2"
@@ -165,6 +171,9 @@ concat-text.workspace = true
 # Remembered preferences, as a small JSON file in the config directory.
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
+# The assistant: HTTPS to the model providers, and frames as base64.
+ureq = "2"
+base64 = "0.22"
 # Text presets are TOML files, as the effect manifests are.
 toml = "1.1"
 
