@@ -15,10 +15,13 @@
 //! them ([`tools`]), a compact reading of a project for an agent's context
 //! ([`summary`]), and where requests go ([`backend`]): the window's own
 //! server when the Automation page has it on, or an API in this process
-//! when it does not.
+//! when it does not. The screen recorder's tools ([`recorder`]) are the
+//! exception: they run the recorder in this process, and only putting a
+//! recording into a project goes through the backend.
 
 pub mod backend;
 pub mod protocol;
+pub mod recorder;
 pub mod schema;
 pub mod summary;
 pub mod tools;

@@ -467,6 +467,122 @@ fn roll_inner(
     }
 }
 
+/// The camera's width in the corner, as a share of the frame's.
+pub const CAMERA_SHARE: f64 = 0.25;
+
+/// A round camera's width in the corner, as a share of the frame's: a
+/// circle reads larger than a rectangle of the same width.
+pub const CIRCLE_SHARE: f64 = 0.2;
+
+/// The camera's distance from the frame's edges, as a share of its width.
+pub const CAMERA_MARGIN: f64 = 0.025;
+
+/// The shape a camera clip is given over the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CameraShape {
+    /// The picture as it is.
+    #[default]
+    Rectangle,
+    /// A rectangle with rounded corners.
+    Rounded,
+    /// The middle square, in a circle.
+    Circle,
+}
+
+impl CameraShape {
+    /// The shape at `index` in the order the recorder lists them; a
+    /// rectangle for anything else.
+    pub fn from_index(index: i32) -> CameraShape {
+        match index {
+            1 => CameraShape::Rounded,
+            2 => CameraShape::Circle,
+            _ => CameraShape::Rectangle,
+        }
+    }
+
+    /// The shape a word names: "rectangle", "rounded" or "circle".
+    pub fn parse(word: &str) -> Option<CameraShape> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "rectangle" => Some(CameraShape::Rectangle),
+            "rounded" => Some(CameraShape::Rounded),
+            "circle" => Some(CameraShape::Circle),
+            _ => None,
+        }
+    }
+}
+
+/// The scale and offsets that put a `picture` in the bottom right corner of
+/// a `frame`, `share` of its width. Scale one is the picture fitted whole
+/// in the frame; offsets are from centred, as shares of the frame.
+pub fn corner(picture: (f64, f64), frame: (f64, f64), share: f64) -> Option<(f64, f64, f64)> {
+    let ((pw, ph), (fw, fh)) = (picture, frame);
+    if !(pw > 0.0 && ph > 0.0 && fw > 0.0 && fh > 0.0) {
+        return None;
+    }
+    let fit = (fw / pw).min(fh / ph);
+    let shown_w = fw * share;
+    let shown_h = shown_w * ph / pw;
+    let scale = shown_w / (pw * fit);
+    let margin = fw * CAMERA_MARGIN;
+    let offset_x = 0.5 - (margin + shown_w / 2.0) / fw;
+    let offset_y = 0.5 - (margin + shown_h / 2.0) / fh;
+    Some((scale, offset_x, offset_y))
+}
+
+/// What makes a camera clip of `picture` size the chosen shape: the patch
+/// that crops and masks it, the picture's size once cropped, and its width
+/// in the corner. A rectangle needs nothing; rounded corners are a
+/// rectangle mask the size of the picture; a circle is the middle square
+/// cut out and a circle mask over it. All of it stays editable in the
+/// inspector, as any mask and crop are.
+pub fn shaped(
+    shape: CameraShape,
+    picture: (f64, f64),
+) -> (Option<concat_project::commands::ClipPatch>, (f64, f64), f64) {
+    use concat_project::commands::ClipPatch;
+    use concat_project::model::{ClipMask, Crop, MaskShape};
+    let (w, h) = picture;
+    let short = w.min(h).max(1.0);
+    match shape {
+        CameraShape::Rounded => {
+            let mask = ClipMask {
+                width: w / short,
+                height: h / short,
+                roundness: 0.35,
+                ..ClipMask::of(MaskShape::Rectangle)
+            };
+            let patch = ClipPatch {
+                mask: Some(Some(mask)),
+                ..ClipPatch::default()
+            };
+            (Some(patch), picture, CAMERA_SHARE)
+        }
+        CameraShape::Circle => {
+            let side_x = (1.0 - short / w.max(1.0)) / 2.0;
+            let side_y = (1.0 - short / h.max(1.0)) / 2.0;
+            let crop = Crop {
+                left: side_x,
+                right: side_x,
+                top: side_y,
+                bottom: side_y,
+            };
+            let mask = ClipMask {
+                width: 1.0,
+                height: 1.0,
+                feather: 0.0,
+                ..ClipMask::of(MaskShape::Circle)
+            };
+            let patch = ClipPatch {
+                crop: Some(Some(crop)),
+                mask: Some(Some(mask)),
+                ..ClipPatch::default()
+            };
+            (Some(patch), (short, short), CIRCLE_SHARE)
+        }
+        CameraShape::Rectangle => (None, picture, CAMERA_SHARE),
+    }
+}
+
 /// A sortable local-ish moment for file names: seconds since the epoch is
 /// unique and needs no calendar.
 fn stamp() -> String {
@@ -479,6 +595,34 @@ fn stamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_camera_sits_in_the_bottom_right_a_quarter_wide() {
+        // A 16:9 camera over a 16:10 screen: fitted, it spans the width.
+        let (scale, x, y) = corner((1280.0, 720.0), (1920.0, 1200.0), CAMERA_SHARE).expect("sized");
+        assert!((scale - 0.25).abs() < 1e-9);
+        let shown_w = 1920.0 * 0.25;
+        let shown_h = shown_w * 720.0 / 1280.0;
+        // Its right edge a margin in from the frame's.
+        assert!((1920.0 * (0.5 + x) + shown_w / 2.0 - (1920.0 - 48.0)).abs() < 1e-6);
+        assert!((1200.0 * (0.5 + y) + shown_h / 2.0 - (1200.0 - 48.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_round_camera_is_the_middle_square_masked() {
+        let (patch, picture, share) = shaped(CameraShape::Circle, (1280.0, 720.0));
+        let patch = patch.expect("a circle crops and masks");
+        let crop = patch.crop.flatten().expect("cropped");
+        assert!((crop.left - 0.21875).abs() < 1e-9 && (crop.right - 0.21875).abs() < 1e-9);
+        assert_eq!((crop.top, crop.bottom), (0.0, 0.0));
+        assert_eq!(picture, (720.0, 720.0));
+        assert_eq!(share, CIRCLE_SHARE);
+        let mask = patch.mask.flatten().expect("masked");
+        assert_eq!((mask.width, mask.height), (1.0, 1.0));
+        assert!(shaped(CameraShape::Rectangle, (1280.0, 720.0)).0.is_none());
+        assert_eq!(CameraShape::parse(" Circle"), Some(CameraShape::Circle));
+        assert_eq!(CameraShape::from_index(1), CameraShape::Rounded);
+    }
 
     /// Records two seconds of the real screen, camera and microphone; run
     /// by hand on a desk:
