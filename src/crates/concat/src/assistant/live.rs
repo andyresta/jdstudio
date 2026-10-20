@@ -109,7 +109,11 @@ fn same_folder(a: &str, b: &str) -> bool {
     let tidy = |path: &str| {
         let path = path.replace('\\', "/");
         let path = path.trim_end_matches('/').to_owned();
-        if cfg!(windows) { path.to_lowercase() } else { path }
+        if cfg!(windows) {
+            path.to_lowercase()
+        } else {
+            path
+        }
     };
     tidy(a) == tidy(b)
 }
