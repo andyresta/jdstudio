@@ -37,25 +37,46 @@ const WINDOW_PATIENCE: Duration = Duration::from_secs(30);
 pub struct Live {
     api: Api,
     monitor: Monitor,
+    /// The project the turn began on. Every request checks it is still the
+    /// one open: a project opened in the middle of a turn must not take the
+    /// rest of that turn's edits.
+    project: String,
 }
 
 impl Live {
-    pub fn new() -> Result<Live, String> {
+    pub fn new(project: String) -> Result<Live, String> {
         Ok(Live {
             api: Api::new(Arc::new(|_| {}))?,
             monitor: Monitor::new(),
+            project,
         })
+    }
+
+    /// [`on_window`] for this turn's project.
+    fn on_studio<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Studio) -> Result<T, ApiError> + Send + 'static,
+    ) -> Result<T, ApiError> {
+        on_window(self.project.clone(), work)
     }
 }
 
-/// Runs `work` with the studio on the window's thread and waits for it.
-fn on_studio<T: Send + 'static>(
+/// Runs `work` with the studio on the window's thread and waits for it,
+/// once it is sure `project` is still the one open.
+fn on_window<T: Send + 'static>(
+    project: String,
     work: impl FnOnce(&mut Studio) -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {
     let (send, receive) = mpsc::channel();
     slint::invoke_from_event_loop(move || {
         Shell::with(|shell, app| {
             let result = match shell.studio.try_borrow_mut() {
+                Ok(studio) if !is_open(&studio, &project) => Err(ApiError::new(
+                    ErrorCode::Refused,
+                    format!(
+                        "the project this conversation works on ({project}) is no longer the one open in the window; stop and tell the user"
+                    ),
+                )),
                 Ok(mut studio) => work(&mut studio),
                 Err(_) => Err(ApiError::new(
                     ErrorCode::Busy,
@@ -72,6 +93,25 @@ fn on_studio<T: Send + 'static>(
     receive
         .recv_timeout(WINDOW_PATIENCE)
         .map_err(|_| ApiError::failed("the window did not answer"))?
+}
+
+/// Whether `project` is the project open in the window.
+fn is_open(studio: &Studio, project: &str) -> bool {
+    studio
+        .session
+        .as_ref()
+        .is_some_and(|session| same_folder(session.path(), project))
+}
+
+/// Two spellings of one folder: separators and a trailing one aside, and
+/// case on Windows, where paths are not case-sensitive.
+fn same_folder(a: &str, b: &str) -> bool {
+    let tidy = |path: &str| {
+        let path = path.replace('\\', "/");
+        let path = path.trim_end_matches('/').to_owned();
+        if cfg!(windows) { path.to_lowercase() } else { path }
+    };
+    tidy(a) == tidy(b)
 }
 
 fn no_project() -> ApiError {
@@ -103,17 +143,17 @@ impl Backend for Live {
                 Response::Result(reply) => encoded(&reply),
                 Response::Error(error) => Err(error),
             },
-            Request::ProjectGet { .. } => on_studio(|studio| view(studio)),
-            Request::EditApply { command, .. } => on_studio(move |studio| {
+            Request::ProjectGet { .. } => self.on_studio(|studio| view(studio)),
+            Request::EditApply { command, .. } => self.on_studio(move |studio| {
                 studio
                     .apply_for_agent(*command)
                     .and_then(|view| encoded(&view))
             }),
-            Request::EditUndo { .. } => on_studio(|studio| {
+            Request::EditUndo { .. } => self.on_studio(|studio| {
                 studio.undo();
                 view(studio)
             }),
-            Request::EditRedo { .. } => on_studio(|studio| {
+            Request::EditRedo { .. } => self.on_studio(|studio| {
                 studio.redo();
                 view(studio)
             }),
@@ -122,20 +162,20 @@ impl Backend for Live {
                 let item = concat_host::media::probe(&file)
                     .map_err(ApiError::failed)?
                     .to_new_media();
-                on_studio(move |studio| {
+                self.on_studio(move |studio| {
                     studio
                         .apply_for_agent(Command::AddMedia { item })
                         .and_then(|view| encoded(&view))
                 })
             }
-            Request::ProjectSave { .. } => on_studio(|studio| {
+            Request::ProjectSave { .. } => self.on_studio(|studio| {
                 if studio.session.is_none() {
                     return Err(no_project());
                 }
                 studio.save(true);
                 Ok(json!({}))
             }),
-            Request::ProjectSetVideo { video, .. } => on_studio(move |studio| {
+            Request::ProjectSetVideo { video, .. } => self.on_studio(move |studio| {
                 let session = studio.session.as_mut().ok_or_else(no_project)?;
                 let view = session
                     .set_video(video)
@@ -151,7 +191,7 @@ impl Backend for Live {
                 ..
             } => {
                 // What to paint, gathered on the window's thread...
-                let (settings, clips, color_space) = on_studio(move |studio| {
+                let (settings, clips, color_space) = self.on_studio(move |studio| {
                     let session = studio.session.as_ref().ok_or_else(no_project)?;
                     let settings = session.settings();
                     let (w, h) = width
@@ -219,4 +259,16 @@ fn png_of(width: u32, height: u32, pixels: Vec<u8>) -> Result<String, ApiError> 
         .write_to(&mut bytes, image::ImageFormat::Png)
         .map_err(|error| ApiError::failed(format!("could not encode the frame: {error}")))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes.into_inner()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_folder;
+
+    #[test]
+    fn one_folder_spelt_two_ways_is_the_same_folder() {
+        assert!(same_folder("C:/Projects/Rec", "C:/Projects/Rec/"));
+        assert!(same_folder("C:\\Projects\\Rec", "C:/Projects/Rec"));
+        assert!(!same_folder("C:/Projects/Rec", "C:/Projects/Other"));
+    }
 }

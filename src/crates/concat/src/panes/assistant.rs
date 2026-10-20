@@ -360,6 +360,7 @@ impl AssistantPane {
             key: keys::get(preset.id),
         };
         let system = agent::system_prompt(session.path(), &studio.project_name);
+        let project = session.path().to_owned();
         self.items.push(Item::new(USER, text.clone()));
         self.history.push(Entry::User(text));
         self.busy = true;
@@ -375,7 +376,7 @@ impl AssistantPane {
         let spawned = std::thread::Builder::new()
             .name("concat assistant".to_owned())
             .spawn(move || {
-                agent::run(settings, system, history, stop, |event| {
+                agent::run(settings, system, project, history, stop, |event| {
                     on_ui(move |studio, _, _| {
                         studio.handle(Msg::Assistant(AssistantMsg::Event(Box::new(event))));
                     });

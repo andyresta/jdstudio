@@ -93,12 +93,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
 pub fn run(
     settings: Settings,
     system: String,
+    project: String,
     mut history: Vec<Entry>,
     stop: Arc<AtomicBool>,
     report: impl Fn(Event),
 ) {
     let tools = tool_defs();
-    let mut live = match Live::new() {
+    let mut live = match Live::new(project) {
         Ok(live) => live,
         Err(error) => {
             report(Event::Failed(error));
@@ -148,14 +149,7 @@ pub fn run(
                         report(Event::ToolDone {
                             name: call.name.clone(),
                             ok: !output.is_error,
-                            detail: output
-                                .text
-                                .lines()
-                                .next()
-                                .unwrap_or_default()
-                                .chars()
-                                .take(140)
-                                .collect(),
+                            detail: outcome_line(&output),
                             picture: output.images.first().cloned(),
                         });
                         output
@@ -179,6 +173,17 @@ pub fn run(
         }
     }
     report(Event::Finished { history, usage });
+}
+
+/// A tool's answer in one line for its card: its first sentence, or
+/// nothing when the answer is JSON, which the card's arguments already say
+/// more usefully than a brace would.
+fn outcome_line(output: &ToolOutput) -> String {
+    let first = output.text.lines().next().unwrap_or_default().trim();
+    if first.starts_with('{') || first.starts_with('[') {
+        return String::new();
+    }
+    first.chars().take(140).collect()
 }
 
 /// The answer for a call that was never run.
@@ -277,7 +282,12 @@ sizes and offsets are fractions of the frame.\n\
 - Prefer one tool call per clear step; use edit_apply with a batch for many small edits as one undo step.\n\
 - Edits stay in memory until saved; save with project_save only when the user asks.\n\
 - You cannot create, open or close projects, or export; tell the user to use the window for those.\n\
-- Before removing clips or anything hard to recover, say what you are about to do.\n\
+- When the request leaves out something that changes the result (which clip, where, how long, \
+what words) and no choice is clearly right, ask one short question first and wait for the answer; \
+offer two or three concrete options when you can.\n\
+- When a sensible default exists and the edit is easy to undo, make it, then say in one line what \
+you assumed so the user can correct it.\n\
+- Before removing clips or anything hard to recover, say what you are about to do and wait for a yes.\n\
 - Answer in the language the user writes in, briefly: say what you changed, not how the tools work."
     )
 }

@@ -494,6 +494,8 @@ export component AssistantPanel inherits Rectangle {
                     if root.draft == "": Text {
                         x: 10px;
                         y: 8px;
+                        width: parent.width - 56px;
+                        overflow: elide;
                         text: !root.data.project-open ? I18n.t("assistant.openProjectFirst")
                             : root.data.configured ? I18n.t("assistant.placeholder") : I18n.t("assistant.setupFirst");
                         color: Theme.fg-dim;
