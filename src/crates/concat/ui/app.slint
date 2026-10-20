@@ -895,10 +895,13 @@ export component App inherits Window {
     in property <image> recorder-preview;
     /// The picked microphone's level, 0..1, for the sheet's meter.
     in property <float> recorder-level;
+    /// What the computer plays, its level, 0..1, for the sheet's meter.
+    in property <float> recorder-system-level;
     callback recorder-open();
     callback recorder-mode-changed(index: int);
     callback recorder-pick-area();
     callback recorder-microphone-changed(index: int);
+    callback recorder-system-audio-changed(on: bool);
     callback recorder-camera-changed(index: int);
     callback recorder-camera-shape-changed(index: int);
     callback recorder-fps-changed(index: int);
@@ -939,9 +942,11 @@ export component App inherits Window {
         cameras: root.recorder-cameras;
         preview: root.recorder-preview;
         level: root.recorder-level;
+        system-level: root.recorder-system-level;
         mode-changed(index) => { root.recorder-mode-changed(index); }
         pick-area => { root.recorder-pick-area(); }
         microphone-changed(index) => { root.recorder-microphone-changed(index); }
+        system-audio-changed(on) => { root.recorder-system-audio-changed(on); }
         camera-changed(index) => { root.recorder-camera-changed(index); }
         camera-shape-changed(index) => { root.recorder-camera-shape-changed(index); }
         fps-changed(index) => { root.recorder-fps-changed(index); }

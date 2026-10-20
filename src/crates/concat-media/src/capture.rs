@@ -4,22 +4,38 @@
 //! Live pictures from the machine itself: the screen and the cameras, read
 //! through libavdevice the way a file is read through libavformat.
 //!
-//! Each platform names its devices its own way - gdigrab and DirectShow on
-//! Windows, AVFoundation on macOS, X11 and Video4Linux on Linux - and this
-//! module is the one place that knows which. What comes out is the same
+//! Each platform names its devices its own way - Desktop Duplication (or
+//! gdigrab) and DirectShow on Windows, AVFoundation on macOS, X11 and
+//! Video4Linux on Linux - and this module is the one place that knows which. What comes out is the same
 //! everywhere: RGBA [`Frame`]s, one per call to [`Grabber::grab`], as fast
 //! as the device hands them over.
 //!
-//! The screen is always grabbed whole and an [`Area`] is cut out of it
-//! here, after the picture is RGBA. That costs a little against asking the
-//! device for the area alone, and buys one meaning for an area's numbers on
-//! every platform: pixels of the picture [`snapshot`] returns, top left at
-//! zero. The area picker draws on that picture, so what was framed there is
-//! exactly what is recorded.
+//! An [`Area`]'s numbers mean one thing on every platform: pixels of the
+//! picture [`snapshot`] returns, top left at zero. The area picker draws on
+//! that picture, so what was framed there is exactly what is recorded.
+//! Desktop Duplication is asked for the area alone, cut on the GPU before
+//! the picture is copied down; every other grabber hands the whole screen
+//! over and the area is cut out of it here, after the picture is RGBA.
+//!
+//! On Windows the screen is read through Desktop Duplication (FFmpeg's
+//! `ddagrab` filter) where it can be: the GPU already holds the desktop,
+//! and copying it down costs a fraction of what gdigrab's GDI copy does.
+//! gdigrab is the fallback - an FFmpeg built without the filter, a remote
+//! session or a driver without duplication, or more than one display, where
+//! gdigrab's picture of the whole desktop is what the picker has always
+//! shown and duplication sees one display only.
+//!
+//! Windows takes duplication away whenever the desktop is not the user's
+//! to show: a UAC prompt, the lock screen, a display mode change. A screen
+//! grabber that loses its device - or stops handing over pictures - says
+//! so through [`Grabber::grab_live`] and opens the screen again behind it,
+//! so a recording holds its last picture through the gap rather than
+//! ending.
 
 use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::time::{Duration, Instant};
 
 use concat_core::frame::Frame;
 use ffmpeg_the_third as ffmpeg;
@@ -69,6 +85,12 @@ pub struct Camera {
     /// What a person is shown.
     pub label: String,
 }
+
+/// How long a screen may hand over nothing before it is taken as lost.
+const STALL: Duration = Duration::from_secs(2);
+
+/// How long to wait between attempts to open a lost screen again.
+const RETRY: Duration = Duration::from_millis(500);
 
 /// The device family for the screen and for cameras on this platform.
 #[cfg(target_os = "windows")]
@@ -171,6 +193,13 @@ pub struct Grabber {
     limit: Option<(u32, u32)>,
     /// What the device is called, for errors.
     label: PathBuf,
+    /// The grabber's family, for the log.
+    kind: &'static str,
+    /// For the screen, what it was opened with, to open it again if it is
+    /// lost; None for a camera.
+    reopen: Option<(Option<Area>, u32)>,
+    /// The screen is lost: when to try opening it again.
+    retry_at: Option<Instant>,
 }
 
 // SAFETY: a Grabber is moved to the thread that records with it and used
@@ -181,6 +210,21 @@ unsafe impl Send for Grabber {}
 impl Grabber {
     /// The screen, at `fps` pictures a second, cut to `area` when given.
     pub fn screen(area: Option<Area>, fps: u32) -> Result<Self> {
+        let mut grabber = Self::open_screen(area, fps)?;
+        grabber.reopen = Some((area, fps));
+        Ok(grabber)
+    }
+
+    fn open_screen(area: Option<Area>, fps: u32) -> Result<Self> {
+        #[cfg(target_os = "windows")]
+        if duplication_wanted() {
+            match Self::duplicated(area, fps) {
+                Ok(grabber) => return Ok(grabber),
+                Err(error) => {
+                    log::info!("desktop duplication unavailable, using gdigrab: {error}");
+                }
+            }
+        }
         let fps = fps.clamp(1, 120).to_string();
         #[cfg(target_os = "windows")]
         let (url, options) = (
@@ -206,6 +250,35 @@ impl Grabber {
         Ok(grabber)
     }
 
+    /// The primary display through Desktop Duplication, cut to `area` on
+    /// the GPU, and copied down as BGRA.
+    #[cfg(target_os = "windows")]
+    fn duplicated(area: Option<Area>, fps: u32) -> Result<Self> {
+        let mut graph = format!(
+            "ddagrab=output_idx=0:draw_mouse=1:framerate={}",
+            fps.clamp(1, 120)
+        );
+        if let Some(area) = area {
+            // Even sides, as 4:2:0 wants; the filter refuses an area off
+            // the display, and gdigrab then takes over.
+            let (width, height) = (area.width & !1, area.height & !1);
+            if width < 2 || height < 2 {
+                return Err(unusable(Path::new("ddagrab"), "the area is too small"));
+            }
+            graph.push_str(&format!(
+                ":offset_x={}:offset_y={}:video_size={width}x{height}",
+                area.x, area.y
+            ));
+        }
+        graph.push_str(",hwdownload,format=bgra");
+        Self::open("lavfi", &graph, &[])
+    }
+
+    /// Which way the screen is being read: "ddagrab", "gdigrab", ...
+    pub fn kind(&self) -> &'static str {
+        self.kind
+    }
+
     /// A camera, by the id [`cameras`] gave it.
     pub fn camera(id: &str) -> Result<Self> {
         #[cfg(target_os = "windows")]
@@ -222,9 +295,10 @@ impl Grabber {
         Self::open(CAMERA_FORMAT, &url, &options)
     }
 
-    fn open(format: &str, url: &str, options: &[(&str, String)]) -> Result<Self> {
+    fn open(format: &'static str, url: &str, options: &[(&str, String)]) -> Result<Self> {
         ffi::init();
         let label = PathBuf::from(format!("{format}:{url}"));
+        let kind = if format == "lavfi" { "ddagrab" } else { format };
         let failed =
             |operation: &'static str, error: ffmpeg::Error| ffi::fail(operation, &label, error);
         let format_name =
@@ -281,6 +355,9 @@ impl Grabber {
             area: None,
             limit: None,
             label,
+            kind,
+            reopen: None,
+            retry_at: None,
         })
     }
 
@@ -307,7 +384,55 @@ impl Grabber {
 
     /// The next picture from the device, waiting for it.
     pub fn grab(&mut self) -> Result<Frame> {
+        self.read(None)
+    }
+
+    /// The next picture from a screen, or None while the screen cannot be
+    /// read - lost to a UAC prompt or the lock screen, say - after waiting
+    /// about a frame. The screen is opened again behind it, by duplication
+    /// or failing that by gdigrab, and pictures carry on when it opens. A
+    /// camera is [`Grabber::grab`]: its failures are its own.
+    pub fn grab_live(&mut self) -> Result<Option<Frame>> {
+        let Some((area, fps)) = self.reopen else {
+            return self.grab().map(Some);
+        };
+        let frame_time = Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
+        if let Some(at) = self.retry_at {
+            if Instant::now() < at {
+                std::thread::sleep(frame_time);
+                return Ok(None);
+            }
+            match Self::open_screen(area, fps) {
+                Ok(fresh) => {
+                    log::info!("the screen is back, through {}", fresh.kind);
+                    *self = Grabber {
+                        reopen: self.reopen,
+                        ..fresh
+                    };
+                }
+                Err(error) => {
+                    log::debug!("the screen will not open yet: {error}");
+                    self.retry_at = Some(Instant::now() + RETRY);
+                    std::thread::sleep(frame_time);
+                    return Ok(None);
+                }
+            }
+        }
+        match self.read(Some(STALL)) {
+            Ok(frame) => Ok(Some(frame)),
+            Err(error) => {
+                log::warn!("the screen was lost, opening it again: {error}");
+                self.retry_at = Some(Instant::now());
+                Ok(None)
+            }
+        }
+    }
+
+    /// The next picture, failing when the device has handed over nothing
+    /// for `stall`, if given.
+    fn read(&mut self, stall: Option<Duration>) -> Result<Frame> {
         let mut decoded = Video::empty();
+        let began = Instant::now();
         loop {
             if self.decoder.receive_frame(&mut decoded).is_ok() {
                 return self.convert(&decoded);
@@ -315,8 +440,17 @@ impl Grabber {
             let mut packet = ffmpeg::Packet::empty();
             match packet.read(&mut self.input) {
                 Ok(()) => {}
-                // A device with nothing yet says so; ask again.
-                Err(error) if ffi::is_again(&error) => continue,
+                // A device with nothing yet says so; ask again shortly.
+                Err(error) if ffi::is_again(&error) => {
+                    if stall.is_some_and(|stall| began.elapsed() > stall) {
+                        return Err(unusable(
+                            &self.label,
+                            "the device stopped handing over pictures",
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
                 Err(error) => return Err(ffi::fail("read device", &self.label, error)),
             }
             if packet.stream() != self.stream {
@@ -380,6 +514,23 @@ impl Grabber {
     }
 }
 
+/// Whether to try Desktop Duplication first: one display (see the module
+/// notes), and not turned off with `CONCAT_SCREEN_GRABBER=gdigrab`, which
+/// is there to compare the two.
+#[cfg(target_os = "windows")]
+fn duplication_wanted() -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetSystemMetrics(index: i32) -> i32;
+    }
+    const SM_CMONITORS: i32 = 80;
+    if std::env::var("CONCAT_SCREEN_GRABBER").is_ok_and(|wanted| wanted == "gdigrab") {
+        return false;
+    }
+    // SAFETY: a plain query with no pointers.
+    unsafe { GetSystemMetrics(SM_CMONITORS) <= 1 }
+}
+
 fn unusable(label: &Path, detail: &str) -> Error {
     Error::Probe {
         path: label.to_path_buf(),
@@ -425,6 +576,7 @@ mod tests {
         };
         let mut grabber = Grabber::screen(Some(area), 30).expect("opens");
         let cut = grabber.grab().expect("a picture");
+        println!("area through {}", grabber.kind());
         assert_eq!((cut.width(), cut.height()), (640, 360));
         let found = cameras();
         println!("cameras {found:?}");
@@ -433,6 +585,36 @@ mod tests {
             let picture = grabber.grab().expect("a picture");
             println!("camera {}x{}", picture.width(), picture.height());
         }
+    }
+
+    /// Grabs 1920 x 1080 of the screen for `CONCAT_RECORD_SECONDS` (ten
+    /// unless set) at `CONCAT_RECORD_FPS` (thirty) and nothing else, for
+    /// timing the grabber's CPU from outside.
+    #[test]
+    #[ignore = "needs a screen at least 1920 x 1080; for measuring by hand"]
+    fn grabs_1080p_for_a_while() {
+        let number = |name: &str, default: u64| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(default)
+        };
+        let area = Area {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let fps = u32::try_from(number("CONCAT_RECORD_FPS", 30)).unwrap_or(30);
+        let mut grabber = Grabber::screen(Some(area), fps).expect("opens");
+        let until = std::time::Instant::now()
+            + std::time::Duration::from_secs(number("CONCAT_RECORD_SECONDS", 10));
+        let mut frames = 0;
+        while std::time::Instant::now() < until {
+            grabber.grab().expect("a picture");
+            frames += 1;
+        }
+        println!("recorded {frames} frames through {}", grabber.kind());
     }
 
     #[test]

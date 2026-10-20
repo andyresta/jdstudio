@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
 // The screen recorder's sheet: what to record - the whole screen or an
-// area of it, a microphone, a camera - and the button that starts it. The
+// area of it, a microphone, what the computer plays, a camera - and the
+// button that starts it. The
 // recording itself runs with the window out of the way and a small bar of
 // its own (recorder-windows.slint) to stop it.
 
@@ -13,6 +14,7 @@ import { Button, DialogRow, DialogSection, Modal, Progress } from "../primitives
 import { SegmentedControl } from "../primitives/segmented-control.slint";
 import { Select } from "../primitives/select.slint";
 import { LevelMeter } from "../primitives/level-meter.slint";
+import { Switch } from "../inspector/controls.slint";
 
 export struct RecorderData {
     open: bool,
@@ -23,6 +25,11 @@ export struct RecorderData {
     /// Indexes into the device lists; 0 is "None".
     microphone: int,
     camera: int,
+    /// Record what the computer plays too.
+    system-audio: bool,
+    /// The system can: WASAPI loopback, Windows only. Elsewhere the row is
+    /// not shown.
+    system-audio-available: bool,
     /// 0 for 30 fps, 1 for 60.
     fps: int,
     /// The camera's shape, on screen and in the editor: 0 a rectangle,
@@ -46,10 +53,13 @@ export component RecorderDialog inherits Modal {
     in property <image> preview;
     /// The picked microphone's level, 0..1.
     in property <float> level;
+    /// What the computer plays, its level, 0..1.
+    in property <float> system-level;
 
     callback mode-changed(index: int);
     callback pick-area();
     callback microphone-changed(index: int);
+    callback system-audio-changed(on: bool);
     callback camera-changed(index: int);
     callback camera-shape-changed(index: int);
     callback fps-changed(index: int);
@@ -162,6 +172,43 @@ export component RecorderDialog inherits Modal {
                         vertical-alignment: center;
                         text: root.level > 0.02 ? I18n.t("recorder.hearing") : I18n.t("recorder.speakToTest");
                         color: root.level > 0.02 ? Theme.fg : Theme.fg-muted;
+                        font-size: Theme.fs-sm;
+                    }
+                }
+            }
+
+            if root.data.system-audio-available: DialogRow {
+                label: I18n.t("recorder.systemAudio");
+                HorizontalLayout {
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        Switch {
+                            checked: root.data.system-audio;
+                            enabled: !root.data.busy;
+                            toggled(on) => { root.system-audio-changed(on); }
+                        }
+                    }
+                }
+            }
+
+            // What the computer plays right now: play something, and it
+            // moves.
+            if root.data.system-audio-available && root.data.system-audio: DialogRow {
+                label: I18n.t("recorder.level");
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout {
+                        alignment: center;
+                        LevelMeter {
+                            value: root.system-level;
+                        }
+                    }
+                    Text {
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                        text: root.system-level > 0.02 ? I18n.t("recorder.playing") : I18n.t("recorder.playToTest");
+                        color: root.system-level > 0.02 ? Theme.fg : Theme.fg-muted;
                         font-size: Theme.fs-sm;
                     }
                 }

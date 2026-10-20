@@ -9,8 +9,9 @@
 //! the size of what was recorded; record from the editor and it lands in
 //! the project that is open, at the playhead. Either way the screen goes on
 //! a lane of its own, the camera over it in the bottom right corner where
-//! it can still be moved or cut, and the voice under both, each at the
-//! moment its device actually began so all three stay in step.
+//! it can still be moved or cut, and the voice and what the computer
+//! played under both, each at the moment its device actually began so all
+//! of them stay in step.
 //!
 //! While it records the editor is minimised and a small bar of its own
 //! (`RecorderBar`) stays on top with the time, Pause and Stop. On Windows
@@ -80,6 +81,8 @@ pub enum RecorderMsg {
     AreaCancelled,
     /// A device list row: 0 is none.
     Microphone(i32),
+    /// Record what the computer plays, or not.
+    SystemAudio(bool),
     Camera(i32),
     Fps(i32),
     Record,
@@ -98,6 +101,8 @@ pub enum RecorderMsg {
     CameraOpened(u32, Box<Result<CameraPreview, String>>),
     /// The microphone is open for its meter, or why not; as above.
     MicrophoneOpened(u32, Box<Result<record::Microphone, String>>),
+    /// What the computer plays is open for its meter, or why not; as above.
+    SystemOpened(u32, Box<Result<record::Microphone, String>>),
     /// The camera panel folded or unfolded.
     CameraToggled,
     /// The camera's shape picked: see `SHAPE_RECTANGLE` and on.
@@ -118,6 +123,7 @@ impl std::fmt::Debug for RecorderMsg {
             Self::AreaChosen(..) => "AreaChosen",
             Self::AreaCancelled => "AreaCancelled",
             Self::Microphone(_) => "Microphone",
+            Self::SystemAudio(_) => "SystemAudio",
             Self::Camera(_) => "Camera",
             Self::Fps(_) => "Fps",
             Self::Record => "Record",
@@ -129,6 +135,7 @@ impl std::fmt::Debug for RecorderMsg {
             Self::Settle(_) => "Settle",
             Self::CameraOpened(..) => "CameraOpened",
             Self::MicrophoneOpened(..) => "MicrophoneOpened",
+            Self::SystemOpened(..) => "SystemOpened",
             Self::CameraToggled => "CameraToggled",
             Self::CameraShape(_) => "CameraShape",
             Self::Probed(_) => "Probed",
@@ -144,6 +151,7 @@ pub struct Probed {
     screen: (Track, Result<MediaSummary, String>),
     camera: Option<(Track, Result<MediaSummary, String>)>,
     voice: Option<(Track, Result<MediaSummary, String>)>,
+    system: Option<(Track, Result<MediaSummary, String>)>,
 }
 
 /// Where the recorder is.
@@ -169,6 +177,8 @@ pub struct RecorderPane {
     cameras: Vec<Camera>,
     microphone: i32,
     camera: i32,
+    /// Record what the computer plays too.
+    system_audio: bool,
     fps: i32,
     listing: bool,
     busy: bool,
@@ -187,9 +197,11 @@ pub struct RecorderPane {
     /// up; handed to the recording when it starts.
     preview_camera: Option<CameraPreview>,
     preview_microphone: Option<record::Microphone>,
+    preview_system: Option<record::Microphone>,
     /// Counted up at every opening, so a late answer is told apart.
     camera_opening: u32,
     microphone_opening: u32,
+    system_opening: u32,
     /// The camera's pictures, for the floating panel: the preview's, then
     /// the recording's.
     tap: Option<Tap>,
@@ -235,8 +247,11 @@ impl RecorderPane {
                 self.camera = remembered(&studio.prefs.recorder_camera, &labels).unwrap_or(0);
                 self.camera_shape = i32::from(studio.prefs.recorder_camera_shape)
                     .clamp(SHAPE_RECTANGLE, SHAPE_CIRCLE);
+                self.system_audio =
+                    studio.prefs.recorder_system_audio && record::system_audio_available();
                 self.reopen_camera();
                 self.reopen_microphone();
+                self.reopen_system();
             }
             RecorderMsg::Mode(mode) => {
                 self.mode = mode.clamp(0, 1);
@@ -291,6 +306,12 @@ impl RecorderPane {
                 studio.prefs.save(&studio.host.dirs);
                 self.reopen_microphone();
             }
+            RecorderMsg::SystemAudio(on) => {
+                self.system_audio = on && record::system_audio_available();
+                studio.prefs.recorder_system_audio = self.system_audio;
+                studio.prefs.save(&studio.host.dirs);
+                self.reopen_system();
+            }
             RecorderMsg::Camera(index) => {
                 self.camera = index;
                 studio.prefs.recorder_camera = self.camera_pick().map(|camera| camera.label);
@@ -326,6 +347,21 @@ impl RecorderPane {
                     Err(error) => {
                         log::warn!("screen recording: the microphone would not open: {error}");
                         self.error = tf("recorder.microphoneFailed", &[&error]);
+                    }
+                }
+            }
+            RecorderMsg::SystemOpened(token, result) => {
+                if token != self.system_opening || !self.previewing() {
+                    return;
+                }
+                match *result {
+                    Ok(system) => {
+                        self.preview_system = Some(system);
+                        self.ensure_meter();
+                    }
+                    Err(error) => {
+                        log::warn!("screen recording: system audio would not open: {error}");
+                        self.error = tf("recorder.systemAudioFailed", &[&error]);
                     }
                 }
             }
@@ -381,6 +417,8 @@ impl RecorderPane {
             area: area.into(),
             microphone: self.microphone,
             camera: self.camera,
+            system_audio: self.system_audio,
+            system_audio_available: record::system_audio_available(),
             fps: self.fps,
             camera_shape: self.camera_shape,
             listing: self.listing,
@@ -469,12 +507,35 @@ impl RecorderPane {
         );
     }
 
+    /// Opens what the computer plays for the sheet's meter when it is to be
+    /// recorded, closing what is open.
+    fn reopen_system(&mut self) {
+        self.preview_system = None;
+        self.system_opening = self.system_opening.wrapping_add(1);
+        Shell::with(|_, app| app.set_recorder_system_level(0.0));
+        if !self.system_audio {
+            return;
+        }
+        let token = self.system_opening;
+        spawn(
+            record::Microphone::open_system,
+            move |studio, _, _, result| {
+                studio.handle(Msg::Recorder(RecorderMsg::SystemOpened(
+                    token,
+                    Box::new(result),
+                )));
+            },
+        );
+    }
+
     /// Closes the previews and the panel.
     fn close_previews(&mut self) {
         self.camera_opening = self.camera_opening.wrapping_add(1);
         self.microphone_opening = self.microphone_opening.wrapping_add(1);
+        self.system_opening = self.system_opening.wrapping_add(1);
         self.preview_camera = None;
         self.preview_microphone = None;
+        self.preview_system = None;
         self.tap = None;
         self.meter = None;
         hide_camera();
@@ -544,7 +605,7 @@ impl RecorderPane {
         self.phase = Phase::Counting(COUNT_IN);
         minimize_main();
         show_bar();
-        let has_mic = self.microphone_name().is_some();
+        let has_mic = self.microphone_name().is_some() || self.system_audio;
         with_bar(|bar| {
             bar.set_has_mic(has_mic);
             bar.set_level(0.0);
@@ -575,6 +636,7 @@ impl RecorderPane {
         // The devices the preview has open go to the recording as they are.
         let camera = self.preview_camera.take();
         let microphone = self.preview_microphone.take();
+        let system = self.preview_system.take();
         let plan = Plan {
             folder: self
                 .folder
@@ -584,18 +646,21 @@ impl RecorderPane {
             fps: if self.fps == 1 { 60 } else { 30 },
             camera: self.camera_pick().map(|camera| camera.id),
             microphone: self.microphone_name(),
+            system_audio: self.system_audio,
         };
         log::info!(
-            "screen recording: starting, area {:?}, {} fps, camera {}, microphone {}",
+            "screen recording: starting, area {:?}, {} fps, camera {}, microphone {}, \
+             system audio {}",
             plan.area,
             plan.fps,
             plan.camera.is_some(),
-            plan.microphone.is_some()
+            plan.microphone.is_some(),
+            plan.system_audio
         );
         spawn(
             move || {
                 let camera = camera.map(CameraPreview::into_device).transpose()?;
-                Recording::start(plan, camera, microphone)
+                Recording::start(plan, camera, microphone, system)
             },
             |studio, _, _, result| {
                 studio.handle(Msg::Recorder(RecorderMsg::Started(Box::new(result))));
@@ -620,6 +685,7 @@ impl RecorderPane {
                 // The devices went with the attempt; open them again.
                 self.reopen_camera();
                 self.reopen_microphone();
+                self.reopen_system();
             }
         }
     }
@@ -673,11 +739,12 @@ impl RecorderPane {
             }
         };
         log::info!(
-            "screen recording: {}x{}, camera {}, voice {}",
+            "screen recording: {}x{}, camera {}, voice {}, system audio {}",
             finished.screen.width,
             finished.screen.height,
             finished.camera.is_some(),
-            finished.voice.is_some()
+            finished.voice.is_some(),
+            finished.system.is_some()
         );
         if studio.session.is_none() {
             // Said on the overlay first; made on the next turn, once the
@@ -715,6 +782,7 @@ impl RecorderPane {
                 screen: probe(finished.screen),
                 camera: finished.camera.map(probe),
                 voice: finished.voice.map(probe),
+                system: finished.system.map(probe),
             },
             |studio, _, _, probed| {
                 studio.handle(Msg::Recorder(RecorderMsg::Probed(Box::new(probed))));
@@ -764,6 +832,7 @@ impl RecorderPane {
         for track in std::iter::once(&mut finished.screen)
             .chain(finished.camera.as_mut())
             .chain(finished.voice.as_mut())
+            .chain(finished.system.as_mut())
         {
             track.path = move_into(&track.path, &into)?;
         }
@@ -771,7 +840,7 @@ impl RecorderPane {
     }
 
     /// The files into the bin, and onto lanes: screen, camera over it in
-    /// the corner, voice.
+    /// the corner, voice, what the computer played.
     fn land(&mut self, probed: Probed, studio: &mut Studio) {
         let (width, height) = studio.output_size();
         let frame = (f64::from(width.max(1)), f64::from(height.max(1)));
@@ -812,6 +881,9 @@ impl RecorderPane {
         let camera = probed.camera.and_then(&mut add);
         if let Some(voice) = probed.voice {
             add(voice);
+        }
+        if let Some(system) = probed.system {
+            add(system);
         }
         if let (Some(clip_id), Some(picture)) = (camera, camera_size) {
             let (patch, picture, share) = shaped(shape, picture);
@@ -984,6 +1056,7 @@ fn send(msg: RecorderMsg) {
 fn meter() -> slint::Timer {
     let timer = slint::Timer::default();
     let mut shown = 0.0f32;
+    let mut shown_system = 0.0f32;
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(33),
@@ -1002,11 +1075,22 @@ fn meter() -> slint::Timer {
                             .as_ref()
                             .map(record::Microphone::level)
                     });
+                let system = pane
+                    .recording
+                    .as_ref()
+                    .and_then(Recording::system_level)
+                    .or_else(|| pane.preview_system.as_ref().map(record::Microphone::level));
                 // Up at once, down gently, as the voiceover's meter.
                 let peak = level.map_or(0.0, |level| record::meter_position(level.peak));
                 shown = peak.max(shown * 0.85);
+                let peak = system.map_or(0.0, |level| record::meter_position(level.peak));
+                shown_system = peak.max(shown_system * 0.85);
                 app.set_recorder_level(shown);
-                with_bar(|bar| bar.set_level(shown));
+                app.set_recorder_system_level(shown_system);
+                // The bar has one meter: the voice, or the computer's sound
+                // when no voice is recorded.
+                let bar = if level.is_some() { shown } else { shown_system };
+                with_bar(|bar_window| bar_window.set_level(bar));
                 let picture = pane.tap.as_ref().and_then(|tap| {
                     tap.lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
