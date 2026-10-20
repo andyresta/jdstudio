@@ -27,6 +27,45 @@ Everything runs on your own machine. No account, no watermark, no upload.
 > described below. It is an independent project, not affiliated with or
 > endorsed by Concat. See [Credits and license](#credits-and-license).
 
+## See it in action
+
+<p align="center">
+  <img src="docs/screenshots/slideshow.gif" alt="JDStudio screen recorder, step by step: start screen, recorder, area picker, recording, editor, webcam clip" width="100%" />
+</p>
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="docs/screenshots/start-screen.png"><img src="docs/screenshots/start-screen-thumb.png" alt="Start screen" /></a><br />
+      <b>Start screen</b><br /><sub>Record screen beside New and Open project</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/screenshots/recorder.png"><img src="docs/screenshots/recorder-thumb.png" alt="Recorder dialog" /></a><br />
+      <b>Recorder</b><br /><sub>Microphone with live level, webcam, camera shape</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/screenshots/area-picker.png"><img src="docs/screenshots/area-picker-thumb.png" alt="Area picker" /></a><br />
+      <b>Area picker</b><br /><sub>Draw, resize, snap to 16:9 · 9:16 · 1:1 · 4:3</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="docs/screenshots/recording.png"><img src="docs/screenshots/recording-thumb.png" alt="Recording" /></a><br />
+      <b>Recording</b><br /><sub>Floating bar and round webcam preview</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/screenshots/editor.png"><img src="docs/screenshots/editor-thumb.png" alt="Editor" /></a><br />
+      <b>Into the editor</b><br /><sub>Screen, webcam and voice already on the timeline</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/screenshots/webcam-clip.png"><img src="docs/screenshots/webcam-clip-thumb.png" alt="Webcam clip" /></a><br />
+      <b>Still editable</b><br /><sub>The webcam is a normal clip with its circle mask</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center"><sub>Click any picture for the full size.</sub></p>
+
 ## What JDStudio adds
 
 ### 🎬 Screen recorder
