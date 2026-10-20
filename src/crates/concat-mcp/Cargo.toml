@@ -13,6 +13,11 @@ concat-api = { workspace = true, features = ["schema"] }
 # The window's server, reached as a client, and the file that says where
 # it is.
 concat-server.workspace = true
+# The screen recorder the window runs, driven by the recorder tools: the
+# devices, the recording, and where a camera lands over the screen.
+concat-host.workspace = true
+concat-media.workspace = true
+concat-project.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

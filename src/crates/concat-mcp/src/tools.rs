@@ -21,6 +21,7 @@ use concat_api::{ApiError, ErrorCode, Request};
 use serde_json::{Map, Value, json};
 
 use crate::backend::Backend;
+use crate::recorder::{self, Recorder};
 use crate::schema::Schemas;
 use crate::summary;
 
@@ -63,6 +64,9 @@ pub enum Action {
     Mask,
     /// `preview.frame`, as an image.
     PreviewFrame,
+    /// The screen recorder, run in this process; the tool's name says
+    /// which part ([`crate::recorder`]).
+    Recorder,
 }
 
 /// How a reply is shown to the agent.
@@ -451,7 +455,53 @@ pub fn catalogue() -> Vec<Tool> {
             idempotent: true,
             action: Action::PreviewFrame,
         },
+        recorder(
+            "recorder_devices",
+            "List recording devices",
+            "The cameras (each with the `id` recorder_start takes and a label) and microphones (by name, the system's default first) this machine has, for recording beside the screen. The recorder runs on the machine this server runs on; it is tested on Windows.",
+        )
+        .reading(),
+        recorder(
+            "recorder_start",
+            "Start recording the screen",
+            "Starts recording the screen - all of it, or `area` - at `fps`, optionally with a camera and a microphone, each into a file of its own in `folder` (or a project's `recordings` folder when `path` names the project). Returns a `job` id. It records until recorder_stop or the end of this MCP session; one recording at a time. Refused before anything is written when a device will not open.",
+        ),
+        recorder(
+            "recorder_status",
+            "How a recording stands",
+            "A recording's state (recording, paused or stopped), the seconds recorded so far with pauses left out, and why a source stopped on its own if one did. A stopped recording gives its files, as recorder_stop does.",
+        )
+        .reading(),
+        recorder(
+            "recorder_pause",
+            "Pause or resume a recording",
+            "`paused: true` holds every source of a running recording, and the paused stretch is left out of every file alike; `paused: false` carries it on.",
+        )
+        .idempotent(),
+        recorder(
+            "recorder_stop",
+            "Stop a recording",
+            "Stops a recording and finishes its files: `screen`, and `camera` and `voice` when recorded, each with its `file`, its `start` in seconds after the earliest source began (so they line up), its length in `seconds`, and the picture's size. Blocks a second or two while the encoders drain. Stopping one already stopped returns its files again.",
+        )
+        .idempotent(),
+        recorder(
+            "recorder_land",
+            "Put a recording in a project",
+            "Puts a stopped recording's files into an open project as the window's recorder does: each into the media bin and onto the first free lane from `start` seconds, in step - the screen, the camera over it scaled into the bottom-right corner (`cameraShape` rectangle, rounded or circle, all editable afterwards), and the voice. Returns the new clips' ids. Each import and placement is its own undoable step.",
+        ),
     ]
+}
+
+const fn recorder(name: &'static str, title: &'static str, description: &'static str) -> Tool {
+    Tool {
+        name,
+        title,
+        description,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        action: Action::Recorder,
+    }
 }
 
 /// What a tool call came to: MCP content, and whether it is an error the
@@ -505,6 +555,7 @@ pub struct Context<'a> {
 pub struct Toolbox {
     tools: Vec<(Tool, Value)>,
     schemas: Schemas,
+    recorder: Recorder,
 }
 
 impl Toolbox {
@@ -521,7 +572,11 @@ impl Toolbox {
                 (tool, schema)
             })
             .collect();
-        Toolbox { tools, schemas }
+        Toolbox {
+            tools,
+            schemas,
+            recorder: Recorder::default(),
+        }
     }
 
     /// `tools/list`'s list.
@@ -563,7 +618,7 @@ impl Toolbox {
             Value::Null => Value::Object(Map::new()),
             other => other,
         };
-        Some(match run(tool, arguments, context) {
+        Some(match run(tool, arguments, context, &self.recorder) {
             Ok(outcome) => outcome,
             Err(error) => Outcome::error(&error),
         })
@@ -595,6 +650,7 @@ fn input_schema(schemas: &Schemas, tool: &Tool) -> Option<Value> {
             Some(schema)
         }
         Action::PreviewFrame => schemas.method("preview.frame"),
+        Action::Recorder => recorder::schema(tool.name),
         Action::Mask => {
             let update = schemas.command("updateClip")?;
             let mut mask = schemas.def("ClipMask")?;
@@ -675,7 +731,12 @@ fn edit(op: &str, mut arguments: Value) -> Result<Request, ApiError> {
     request("edit.apply", json!({ "path": path, "command": arguments }))
 }
 
-fn run(tool: &Tool, arguments: Value, context: Context<'_>) -> Result<Outcome, ApiError> {
+fn run(
+    tool: &Tool,
+    arguments: Value,
+    context: Context<'_>,
+    recorder: &Recorder,
+) -> Result<Outcome, ApiError> {
     let backend = context.backend;
     match tool.action {
         Action::Method { method, reply } => {
@@ -708,6 +769,15 @@ fn run(tool: &Tool, arguments: Value, context: Context<'_>) -> Result<Outcome, A
             let result = backend.call(mask(arguments)?)?;
             Ok(Outcome::json(summary::view(&result)))
         }
+        Action::Recorder => Ok(Outcome::json(match tool.name {
+            "recorder_devices" => recorder::devices(),
+            "recorder_start" => recorder.start(&arguments, &backend.roots())?,
+            "recorder_status" => recorder.status(&arguments)?,
+            "recorder_pause" => recorder.pause(&arguments)?,
+            "recorder_stop" => recorder.stop(&arguments)?,
+            "recorder_land" => recorder.land(&arguments, backend)?,
+            other => return Err(ApiError::failed(format!("no recorder tool {other}"))),
+        })),
     }
 }
 
@@ -1050,6 +1120,18 @@ mod tests {
                 "preview_frame",
                 json!({ "path": "/tmp/Cut", "time": 1.5, "width": 320, "height": 180 }),
             ),
+            ("recorder_devices", json!({})),
+            (
+                "recorder_start",
+                json!({ "path": "/tmp/Cut", "area": { "x": 0, "y": 0, "width": 1280, "height": 720 }, "fps": 60, "camera": "video=Cam", "microphone": "Mic" }),
+            ),
+            ("recorder_status", json!({ "job": "r1" })),
+            ("recorder_pause", json!({ "job": "r1", "paused": false })),
+            ("recorder_stop", json!({ "job": "r1" })),
+            (
+                "recorder_land",
+                json!({ "path": "/tmp/Cut", "job": "r1", "start": 2.0, "cameraShape": "circle" }),
+            ),
         ]
     }
 
@@ -1105,6 +1187,8 @@ mod tests {
                 }
                 Action::PreviewFrame => request("preview.frame", sample.clone()),
                 Action::Mask => mask(sample.clone()),
+                // Run in this process, not a request.
+                Action::Recorder => continue,
             };
             let built = built.unwrap_or_else(|error| panic!("{name}: {error}"));
             // Back again: the request as the API writes it fits the API's

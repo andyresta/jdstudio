@@ -45,6 +45,24 @@ pub trait Backend: Send {
 
     /// The session is over: stop what is running, and wait for it.
     fn finish(&mut self) {}
+
+    /// Where this server may write files of its own - a recording - when
+    /// it is confined; empty when it is not.
+    fn roots(&self) -> Vec<PathBuf> {
+        confined_roots()
+    }
+}
+
+/// The roots `CONCAT_MCP_ROOTS` names (the platform's path-list syntax), or
+/// the user's home, each resolved as far as it exists.
+pub fn confined_roots() -> Vec<PathBuf> {
+    std::env::var_os("CONCAT_MCP_ROOTS")
+        .map(|roots| std::env::split_paths(&roots).collect())
+        .filter(|roots: &Vec<PathBuf>| !roots.is_empty())
+        .unwrap_or_else(concat_server::home_root)
+        .into_iter()
+        .map(|root| root.canonicalize().unwrap_or(root))
+        .collect()
 }
 
 /// Which backend `concat --mcp` uses.
@@ -182,13 +200,9 @@ impl Headless {
 
     /// An API made by the caller - a test's, over a scratch folder.
     pub fn with_api(mut api: Api) -> Headless {
-        let roots: Vec<PathBuf> = std::env::var_os("CONCAT_MCP_ROOTS")
-            .map(|roots| std::env::split_paths(&roots).collect())
-            .filter(|roots: &Vec<PathBuf>| !roots.is_empty())
-            .unwrap_or_else(concat_server::home_root);
         api.add_capability("mcp");
         if api.roots().is_empty() {
-            api.restrict_writes_to(roots);
+            api.restrict_writes_to(confined_roots());
         }
         let stopper = api.stopper();
         Headless { api, stopper }
@@ -217,5 +231,9 @@ impl Backend for Headless {
     fn finish(&mut self) {
         self.stopper.cancel_all();
         self.api.finish();
+    }
+
+    fn roots(&self) -> Vec<PathBuf> {
+        self.api.roots().to_vec()
     }
 }

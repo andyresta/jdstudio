@@ -1274,6 +1274,9 @@ name = "concat-mcp"
 version = "0.2.8"
 dependencies = [
  "concat-api",
+ "concat-host",
+ "concat-media",
+ "concat-project",
  "concat-server",
  "serde_json",
  "tempfile",

@@ -24,7 +24,9 @@ use std::time::Duration;
 use concat_core::frame::Frame;
 use concat_host::media::{self, MediaSummary};
 use concat_host::record;
-use concat_host::screen::{CameraPreview, Finished, Plan, Recording, Tap, Track};
+use concat_host::screen::{
+    CameraPreview, CameraShape, Finished, Plan, Recording, Tap, Track, corner, shaped,
+};
 use concat_media::capture::{self, Area, Camera};
 use concat_project::Command;
 use slint::ComponentHandle;
@@ -38,12 +40,6 @@ use crate::ui::{App, AreaPicker, CameraPanel, I18n, RecorderBar, RecorderData, T
 /// Seconds counted in before the recording starts.
 const COUNT_IN: u8 = 3;
 
-/// The camera's width in the corner, as a share of the frame's.
-const CAMERA_SHARE: f64 = 0.25;
-
-/// The camera's distance from the frame's edges, as a share of its width.
-const CAMERA_MARGIN: f64 = 0.025;
-
 /// The floating camera panel, open and folded, in logical pixels.
 const PANEL_OPEN: (f32, f32) = (320.0, 180.0);
 const PANEL_ROUND: (f32, f32) = (200.0, 200.0);
@@ -53,10 +49,6 @@ const PANEL_FOLDED: (f32, f32) = (68.0, 44.0);
 const SHAPE_RECTANGLE: i32 = 0;
 const SHAPE_ROUNDED: i32 = 1;
 const SHAPE_CIRCLE: i32 = 2;
-
-/// A round camera's width in the corner, as a share of the frame's: a
-/// circle reads larger than a rectangle of the same width.
-const CIRCLE_SHARE: f64 = 0.2;
 
 /// How wide the panel's picture is made: no wider than the panel shows it.
 const PANEL_PICTURE: u32 = 480;
@@ -814,7 +806,7 @@ impl RecorderPane {
             add(voice);
         }
         if let (Some(clip_id), Some(picture)) = (camera, camera_size) {
-            let (patch, picture, share) = shaped(shape, picture);
+            let (patch, picture, share) = shaped(CameraShape::from_index(shape), picture);
             if let Some(patch) = patch {
                 studio.apply(Command::UpdateClip {
                     clip_id: clip_id.clone(),
@@ -845,24 +837,6 @@ impl RecorderPane {
     }
 }
 
-/// The scale and offsets that put a `picture` in the bottom right corner of
-/// a `frame`, a quarter of its width. Scale one is the picture fitted whole
-/// in the frame; offsets are from centred, as shares of the frame.
-fn corner(picture: (f64, f64), frame: (f64, f64), share: f64) -> Option<(f64, f64, f64)> {
-    let ((pw, ph), (fw, fh)) = (picture, frame);
-    if !(pw > 0.0 && ph > 0.0 && fw > 0.0 && fh > 0.0) {
-        return None;
-    }
-    let fit = (fw / pw).min(fh / ph);
-    let shown_w = fw * share;
-    let shown_h = shown_w * ph / pw;
-    let scale = shown_w / (pw * fit);
-    let margin = fw * CAMERA_MARGIN;
-    let offset_x = 0.5 - (margin + shown_w / 2.0) / fw;
-    let offset_y = 0.5 - (margin + shown_h / 2.0) / fh;
-    Some((scale, offset_x, offset_y))
-}
-
 /// The part of `still` an area covers: the dialog's preview of it.
 fn cut(still: &Frame, area: Area) -> Option<Frame> {
     let area = area.within(still.width(), still.height())?;
@@ -874,60 +848,6 @@ fn cut(still: &Frame, area: Area) -> Option<Frame> {
         pixels.extend_from_slice(&still.pixels()[start..start + row]);
     }
     Frame::from_rgba(area.width, area.height, pixels)
-}
-
-/// What makes a camera clip of `picture` size the chosen shape: the patch
-/// that crops and masks it, the picture's size once cropped, and its width
-/// in the corner. A rectangle needs nothing; rounded corners are a
-/// rectangle mask the size of the picture; a circle is the middle square
-/// cut out and a circle mask over it. All of it stays editable in the
-/// inspector, as any mask and crop are.
-fn shaped(
-    shape: i32,
-    picture: (f64, f64),
-) -> (Option<concat_project::commands::ClipPatch>, (f64, f64), f64) {
-    use concat_project::commands::ClipPatch;
-    use concat_project::model::{ClipMask, Crop, MaskShape};
-    let (w, h) = picture;
-    let short = w.min(h).max(1.0);
-    match shape {
-        SHAPE_ROUNDED => {
-            let mask = ClipMask {
-                width: w / short,
-                height: h / short,
-                roundness: 0.35,
-                ..ClipMask::of(MaskShape::Rectangle)
-            };
-            let patch = ClipPatch {
-                mask: Some(Some(mask)),
-                ..ClipPatch::default()
-            };
-            (Some(patch), picture, CAMERA_SHARE)
-        }
-        SHAPE_CIRCLE => {
-            let side_x = (1.0 - short / w.max(1.0)) / 2.0;
-            let side_y = (1.0 - short / h.max(1.0)) / 2.0;
-            let crop = Crop {
-                left: side_x,
-                right: side_x,
-                top: side_y,
-                bottom: side_y,
-            };
-            let mask = ClipMask {
-                width: 1.0,
-                height: 1.0,
-                feather: 0.0,
-                ..ClipMask::of(MaskShape::Circle)
-            };
-            let patch = ClipPatch {
-                crop: Some(Some(crop)),
-                mask: Some(Some(mask)),
-                ..ClipPatch::default()
-            };
-            (Some(patch), (short, short), CIRCLE_SHARE)
-        }
-        _ => (None, picture, CAMERA_SHARE),
-    }
 }
 
 /// The panel's size and outline for a shape, open or folded.
@@ -1313,32 +1233,6 @@ fn dress_camera(panel: &CameraPanel) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_camera_sits_in_the_bottom_right_a_quarter_wide() {
-        // A 16:9 camera over a 16:10 screen: fitted, it spans the width.
-        let (scale, x, y) = corner((1280.0, 720.0), (1920.0, 1200.0), CAMERA_SHARE).expect("sized");
-        assert!((scale - 0.25).abs() < 1e-9);
-        let shown_w = 1920.0 * 0.25;
-        let shown_h = shown_w * 720.0 / 1280.0;
-        // Its right edge a margin in from the frame's.
-        assert!((1920.0 * (0.5 + x) + shown_w / 2.0 - (1920.0 - 48.0)).abs() < 1e-6);
-        assert!((1200.0 * (0.5 + y) + shown_h / 2.0 - (1200.0 - 48.0)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_round_camera_is_the_middle_square_masked() {
-        let (patch, picture, share) = shaped(SHAPE_CIRCLE, (1280.0, 720.0));
-        let patch = patch.expect("a circle crops and masks");
-        let crop = patch.crop.flatten().expect("cropped");
-        assert!((crop.left - 0.21875).abs() < 1e-9 && (crop.right - 0.21875).abs() < 1e-9);
-        assert_eq!((crop.top, crop.bottom), (0.0, 0.0));
-        assert_eq!(picture, (720.0, 720.0));
-        assert_eq!(share, CIRCLE_SHARE);
-        let mask = patch.mask.flatten().expect("masked");
-        assert_eq!((mask.width, mask.height), (1.0, 1.0));
-        assert!(shaped(SHAPE_RECTANGLE, (1280.0, 720.0)).0.is_none());
-    }
 
     #[test]
     fn a_remembered_device_is_found_past_none() {
