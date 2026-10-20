@@ -1162,6 +1162,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wgpu",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 

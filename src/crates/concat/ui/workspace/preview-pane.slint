@@ -477,13 +477,17 @@ component MaskItem inherits Rectangle {
     background: transparent;
 
     // A dark line under a light one, so the outline reads over any picture.
+    // The path is in thousandths of the frame's width both ways (see
+    // `MaskFrame::path_point`), so its box takes the frame's shape: a Path
+    // scales its viewbox evenly, and a square one squeezed the outline.
+    property <float> box-height: 1000 * root.height / Math.max(1px, root.width);
     Path {
         x: 0;
         y: 0;
         width: root.width;
         height: root.height;
         viewbox-width: 1000;
-        viewbox-height: 1000;
+        viewbox-height: root.box-height;
         commands: root.item.mask-path;
         stroke: Theme.stage;
         stroke-width: 3px;
@@ -494,7 +498,7 @@ component MaskItem inherits Rectangle {
         width: root.width;
         height: root.height;
         viewbox-width: 1000;
-        viewbox-height: 1000;
+        viewbox-height: root.box-height;
         commands: root.item.mask-path;
         stroke: #ffffff;
         stroke-width: 1.25px;

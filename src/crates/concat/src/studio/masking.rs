@@ -170,14 +170,15 @@ impl MaskFrame {
         ]
     }
 
-    /// A point of the frame as the overlay's path takes it: a thousandth
-    /// of the frame's width across and of its height down.
+    /// A point of the frame as the overlay's path takes it: thousandths of
+    /// the frame's width, both ways, so the path's box has the frame's
+    /// shape. A Path scales its viewbox evenly and centres it; a box a
+    /// thousand square on a wide frame squeezed the outline toward the
+    /// middle, off the shape it traces (the overlay's viewbox height is
+    /// `1000 * height / width` to match).
     fn path_point(&self, at: (f64, f64)) -> String {
-        format!(
-            "{:.2} {:.2}",
-            at.0 / self.frame.0 * 1000.0,
-            at.1 / self.frame.1 * 1000.0
-        )
+        let unit = 1000.0 / self.frame.0.max(1.0);
+        format!("{:.2} {:.2}", at.0 * unit, at.1 * unit)
     }
 
     /// The mask's outline as path commands on the overlay's thousand-unit
@@ -394,6 +395,13 @@ mod tests {
         for (x, y) in frame.edge(16) {
             assert!((x.hypot(y) - 30.0).abs() < 0.01, "a circle of 30 pixels");
         }
+        // On the frame's own shape: a point at the frame's bottom right is
+        // a thousand across and the frame's height in those units down.
+        let wide = placed(ClipMask::of(MaskShape::Circle));
+        assert_eq!(
+            wide.path_point(wide.frame),
+            format!("1000.00 {:.2}", 1000.0 * wide.frame.1 / wide.frame.0)
+        );
         let star = placed(ClipMask::of(MaskShape::Star)).outline();
         assert!(star.starts_with("M ") && star.ends_with('Z'));
         let line = placed(ClipMask::of(MaskShape::Linear)).outline();

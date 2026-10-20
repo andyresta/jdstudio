@@ -28,6 +28,14 @@ pub struct Preferences {
     pub dark: Option<bool>,
     /// The parent folder of the last project created successfully.
     pub last_project_location: Option<String>,
+    /// The screen recorder's microphone, by name; `None` records none.
+    pub recorder_microphone: Option<String>,
+    /// The screen recorder's camera, by the name it is shown under; `None`
+    /// records none.
+    pub recorder_camera: Option<String>,
+    /// The screen recorder's camera shape: 0 a rectangle, 1 rounded
+    /// corners, 2 a circle.
+    pub recorder_camera_shape: u8,
     /// The accent, by the lower-cased name the theme lists it under —
     /// "lime", "sky", ... — or as "#rrggbb" for a colour picked by hand.
     /// `None`, or a name no longer on the list, is the first one, which is

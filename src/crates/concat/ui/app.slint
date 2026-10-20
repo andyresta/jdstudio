@@ -31,6 +31,8 @@ import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { AvatarData } from "primitives/avatar.slint";
 import { VoiceoverData, VoiceoverPanel } from "dialogs/voiceover.slint";
+import { RecorderData, RecorderDialog, RecorderLoading } from "dialogs/recorder.slint";
+import { AreaPicker, CameraPanel, RecorderBar } from "recorder-windows.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor } from "editor.slint";
 import { PaneKind, Panes } from "workspace/pane-switcher.slint";
@@ -66,6 +68,7 @@ export {
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     ChipOption, RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
     CaptionsSheetData, SpeechSheetData, VoiceoverData, SoundCardData, Sounds, VoiceCardData,
+    RecorderData, RecorderBar, AreaPicker, CameraPanel,
 }
 
 export component App inherits Window {
@@ -120,7 +123,7 @@ export component App inherits Window {
     }
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open
-        || root.start.composing;
+        || root.start.composing || root.recorder.open;
     changed sheet-open => {
         if (!root.sheet-open) {
             keys.focus();
@@ -506,6 +509,7 @@ export component App inherits Window {
             if (event.text == Key.Escape) {
                 if (root.confirm.open) { root.confirm-dismissed(); return accept; }
                 if (root.relink.open) { root.relink-dismiss(); return accept; }
+                if (root.recorder.open) { root.recorder-dismiss(); return accept; }
                 if (root.project-sheet.open) { root.project-closed(); return accept; }
                 if (root.settings.open) { root.settings-closed(); return accept; }
                 if (root.export.open) {
@@ -593,8 +597,10 @@ export component App inherits Window {
                 phone: root.phone;
                 version: root.app-version;
                 can-drop: root.can-drop;
+                can-record: !root.phone;
 
                 compose => { root.start-compose(); }
+                record => { root.recorder-open(); }
                 open => { root.start-open(); }
                 open-settings => { root.open-settings(); }
                 open-recent(path) => { root.start-open-recent(path); }
@@ -881,6 +887,24 @@ export component App inherits Window {
     callback relink-all();
     callback relink-dismiss();
 
+    // The screen recorder's sheet; its bar and area picker are windows of
+    // their own (recorder-windows.slint).
+    in property <RecorderData> recorder;
+    in property <[string]> recorder-microphones;
+    in property <[string]> recorder-cameras;
+    in property <image> recorder-preview;
+    /// The picked microphone's level, 0..1, for the sheet's meter.
+    in property <float> recorder-level;
+    callback recorder-open();
+    callback recorder-mode-changed(index: int);
+    callback recorder-pick-area();
+    callback recorder-microphone-changed(index: int);
+    callback recorder-camera-changed(index: int);
+    callback recorder-camera-shape-changed(index: int);
+    callback recorder-fps-changed(index: int);
+    callback recorder-record();
+    callback recorder-dismiss();
+
     ProjectDialog {
         fill: root.sheets-fill;
         inset-top: root.safe-area-insets.top;
@@ -902,6 +926,27 @@ export component App inherits Window {
         custom-fps-edited(fps) => { root.project-custom-fps-edited(fps); }
         color-space-changed(index) => { root.project-color-space-changed(index); }
         apply => { root.project-apply(); }
+    }
+
+    RecorderDialog {
+        fill: root.sheets-fill;
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
+        data: root.recorder;
+        microphones: root.recorder-microphones;
+        cameras: root.recorder-cameras;
+        preview: root.recorder-preview;
+        level: root.recorder-level;
+        mode-changed(index) => { root.recorder-mode-changed(index); }
+        pick-area => { root.recorder-pick-area(); }
+        microphone-changed(index) => { root.recorder-microphone-changed(index); }
+        camera-changed(index) => { root.recorder-camera-changed(index); }
+        camera-shape-changed(index) => { root.recorder-camera-shape-changed(index); }
+        fps-changed(index) => { root.recorder-fps-changed(index); }
+        record => { root.recorder-record(); }
+        dismiss => { root.recorder-dismiss(); }
     }
 
     RelinkDialog {
@@ -964,6 +1009,16 @@ export component App inherits Window {
         selected(id) => { root.app-menu-selected(id); }
         // The arrows walk the strip: File, Edit, View and round again.
         neighbour(by) => { root.open-menu-from-keys(Math.mod(root.open-menu + by, 3)); }
+    }
+
+    // Between a screen recording's Stop and the editor, over everything
+    // but the notices.
+    RecorderLoading {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        stage: root.recorder.loading;
     }
 
     // Last of all, and over everything including the sheets: an export that

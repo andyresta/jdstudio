@@ -208,6 +208,8 @@ export component TimelineTray inherits Rectangle {
     callback captions();
     callback speak();
     callback record-voiceover();
+    /// Put up the screen recorder; what it records lands in this project.
+    callback record-screen();
     /// Add a lane: on top of the stack, or with `bottom` under it.
     callback add-track(bottom: bool);
     callback fit();
@@ -417,6 +419,14 @@ export component TimelineTray inherits Rectangle {
             idle: root.recording ? Theme.danger : Theme.fg;
             checked: Editor.voiceover-open && !root.recording;
             clicked => { root.record-voiceover(); }
+        }
+        // The screen, a camera and a voice, back into this project at the
+        // playhead.
+        TrayButton {
+            glyph: Glyph.screen;
+            label: I18n.t("recorder.recordScreen");
+            icon-size: 16px;
+            clicked => { root.record-screen(); }
         }
         if root.recording: LevelMeter {
             width: 56px;

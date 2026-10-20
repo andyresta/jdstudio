@@ -1716,6 +1716,8 @@ export component MediaPane inherits Rectangle {
     changed jump-token => { root.tab = 0; }
 
     callback import-media();
+    /// Put up the screen recorder.
+    callback record-screen();
     callback filter-changed(filter: MediaFilter);
     /// The sort dropdown beside the import button picked a new order.
     callback sort-changed(index: int);
@@ -2396,6 +2398,13 @@ export component MediaPane inherits Rectangle {
                         horizontal-stretch: 0;
                         busy: root.importing;
                         clicked => { root.import-media(); }
+                    }
+                    ImportButton {
+                        height: Theme.h;
+                        horizontal-stretch: 0;
+                        label: I18n.t("recorder.record");
+                        glyph: Glyph.screen;
+                        clicked => { root.record-screen(); }
                     }
                     Rectangle { horizontal-stretch: 1; }
                     // Sort, and sort only: narrowing the bin by kind is the

@@ -579,6 +579,215 @@ pub fn minimize(window: &slint::Window) {
     let _ = window;
 }
 
+/// Brings a minimised window back and to the front.
+pub fn restore(window: &slint::Window) {
+    #[cfg(not(target_os = "android"))]
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        window.with_winit_window(|window| {
+            window.set_minimized(false);
+            window.focus_window();
+        });
+    }
+    #[cfg(target_os = "android")]
+    let _ = window;
+}
+
+/// Places the screen recorder's bar at the bottom middle of the screen, over
+/// everything, and - on Windows - out of every capture, so it is not in
+/// the recording even when it sits inside the recorded area. False while
+/// the platform's window is not made yet: it is made a turn of the event
+/// loop after `show`, and the caller tries again then.
+pub fn float_bar(window: &slint::Window) -> bool {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        use slint::winit_030::winit::dpi::PhysicalPosition;
+        use slint::winit_030::winit::window::WindowLevel;
+        window
+            .with_winit_window(|window| {
+                window.set_window_level(WindowLevel::AlwaysOnTop);
+                if let Some(monitor) = window
+                    .current_monitor()
+                    .or_else(|| window.primary_monitor())
+                {
+                    let (at, size, outer) =
+                        (monitor.position(), monitor.size(), window.outer_size());
+                    let x =
+                        at.x + (i64::from(size.width) - i64::from(outer.width)).max(0) as i32 / 2;
+                    // Clear of a taskbar or a dock, which winit's monitor size
+                    // includes: about 48 logical pixels on Windows, more on a Mac.
+                    let clear = (80.0 * monitor.scale_factor()) as i64;
+                    let y = at.y
+                        + (i64::from(size.height) - i64::from(outer.height) - clear).max(0) as i32;
+                    window.set_outer_position(PhysicalPosition::new(x, y));
+                }
+                exclude_from_capture(window);
+            })
+            .is_some()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = window;
+        true
+    }
+}
+
+/// Places the screen recorder's camera panel in the bottom right corner of
+/// the screen, over everything and out of every capture; see [`float_bar`].
+pub fn float_corner(window: &slint::Window) -> bool {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        use slint::winit_030::winit::dpi::PhysicalPosition;
+        use slint::winit_030::winit::window::WindowLevel;
+        window
+            .with_winit_window(|window| {
+                window.set_window_level(WindowLevel::AlwaysOnTop);
+                if let Some(monitor) = window
+                    .current_monitor()
+                    .or_else(|| window.primary_monitor())
+                {
+                    let (at, size, outer) =
+                        (monitor.position(), monitor.size(), window.outer_size());
+                    let margin = (24.0 * monitor.scale_factor()) as i64;
+                    let clear = (80.0 * monitor.scale_factor()) as i64;
+                    let x = at.x
+                        + (i64::from(size.width) - i64::from(outer.width) - margin).max(0) as i32;
+                    let y = at.y
+                        + (i64::from(size.height) - i64::from(outer.height) - clear).max(0) as i32;
+                    window.set_outer_position(PhysicalPosition::new(x, y));
+                }
+                exclude_from_capture(window);
+            })
+            .is_some()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = window;
+        true
+    }
+}
+
+/// The outline a floating window is cut to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WindowShape {
+    /// Its own rectangle.
+    Square,
+    /// Corners rounded by this many logical pixels.
+    Rounded(f32),
+    /// The ellipse in its box: a circle when the box is square.
+    Ellipse,
+}
+
+/// Cuts a window `width` by `height` logical pixels to `shape`: on Windows
+/// with a window region, so what is outside is not drawn or clicked at all;
+/// elsewhere the window stays its rectangle and its content draws the
+/// shape. False while the platform's window is not made yet; see
+/// [`float_bar`].
+pub fn shape_window(window: &slint::Window, shape: WindowShape, width: f32, height: f32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::Graphics::Gdi::{
+            CreateEllipticRgn, CreateRoundRectRgn, SetWindowRgn,
+        };
+        let scale = window.scale_factor();
+        let (w, h) = (
+            (width * scale).round() as i32,
+            (height * scale).round() as i32,
+        );
+        window
+            .with_winit_window(|window| {
+                let Ok(handle) = window.window_handle() else {
+                    return;
+                };
+                let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+                    return;
+                };
+                let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
+                // SAFETY: the handle is the live window winit made. A region
+                // handed to SetWindowRgn belongs to the system from then on,
+                // so it is not deleted here; a null region takes it off.
+                unsafe {
+                    let region = match shape {
+                        WindowShape::Square => core::ptr::null_mut(),
+                        WindowShape::Rounded(radius) => {
+                            let r = (radius * scale * 2.0).round() as i32;
+                            CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r)
+                        }
+                        WindowShape::Ellipse => CreateEllipticRgn(0, 0, w + 1, h + 1),
+                    };
+                    SetWindowRgn(hwnd, region, 1);
+                }
+            })
+            .is_some()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, shape, width, height);
+        true
+    }
+}
+
+/// Keeps a window out of screen captures, on Windows 10 2004 and later:
+/// the recorder's own windows are never in the recording.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn exclude_from_capture(window: &WinitWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = window.window_handle()
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+            };
+            // SAFETY: the handle is the live window winit made; the call only
+            // changes how capture treats it, and failing (before Windows 10
+            // 2004) leaves the window in the picture.
+            let excluded = unsafe {
+                SetWindowDisplayAffinity(
+                    win32.hwnd.get() as *mut core::ffi::c_void,
+                    WDA_EXCLUDEFROMCAPTURE,
+                )
+            };
+            if excluded == 0 {
+                log::warn!("screen recording: a window could not be kept out of the capture");
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = window;
+}
+
+/// Makes a window cover its whole screen, borderless, and takes focus: the
+/// area picker. False while the platform's window is not made yet; see
+/// [`float_bar`].
+pub fn cover_screen(window: &slint::Window) -> bool {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        use slint::winit_030::winit::window::{Fullscreen, WindowLevel};
+        window
+            .with_winit_window(|window| {
+                let monitor = window
+                    .primary_monitor()
+                    .or_else(|| window.current_monitor());
+                window.set_fullscreen(Some(Fullscreen::Borderless(monitor)));
+                window.set_window_level(WindowLevel::AlwaysOnTop);
+                window.focus_window();
+            })
+            .is_some()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = window;
+        true
+    }
+}
+
 /// Maximises a window that opened larger than its screen. The window asks
 /// for 1400 by 900 and may not shrink past 900 by 560, both in logical
 /// pixels, and a 1920 by 1080 laptop at 150 % has 1280 by 720 of them less

@@ -86,6 +86,8 @@ export global Editor {
     in-out property <int> media-jump-token;
 
     callback import-media();
+    /// Put up the screen recorder, to record into this project.
+    callback record-screen();
     callback media-filter-changed(filter: MediaFilter);
     callback media-sort-changed(index: int);
     callback media-select(id: int, additive: bool);

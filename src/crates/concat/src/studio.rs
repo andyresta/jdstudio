@@ -672,6 +672,9 @@ pub struct Models {
     pub speech_samples: Rc<VecModel<SharedString>>,
     /// The microphones the voiceover panel lists.
     pub voiceover_devices: Rc<VecModel<SharedString>>,
+    /// The screen recorder's microphones and cameras, "None" first.
+    pub recorder_microphones: Rc<VecModel<SharedString>>,
+    pub recorder_cameras: Rc<VecModel<SharedString>>,
     pub speech_sample_waves: Rc<VecModel<SharedString>>,
     pub speech_sample_details: Rc<VecModel<SharedString>>,
     /// The Audio page's shelves.
@@ -748,6 +751,8 @@ impl Models {
             speaker_avatars: Rc::new(VecModel::default()),
             speech_samples: Rc::new(VecModel::default()),
             voiceover_devices: Rc::new(VecModel::default()),
+            recorder_microphones: Rc::new(VecModel::default()),
+            recorder_cameras: Rc::new(VecModel::default()),
             speech_sample_waves: Rc::new(VecModel::default()),
             speech_sample_details: Rc::new(VecModel::default()),
             sounds_mine: Rc::new(VecModel::default()),
@@ -1004,6 +1009,8 @@ pub struct Studio {
     pub meters: crate::meters::MeterFeed,
     /// The voiceover take, while one runs.
     pub voiceover: crate::panes::voiceover::VoiceoverPane,
+    /// The screen recorder.
+    pub recorder: crate::panes::recorder::RecorderPane,
     /// Every speaker the voice engine offers, in its own order.
     /// The looks the Text page offers; see `presets`.
     pub text_presets: Vec<TextPreset>,
@@ -2332,6 +2339,7 @@ impl Studio {
             source: None,
             meters: crate::meters::MeterFeed::default(),
             voiceover: crate::panes::voiceover::VoiceoverPane::default(),
+            recorder: crate::panes::recorder::RecorderPane::default(),
             text_presets,
             installed_fonts: presets::installed_fonts(&host.dirs),
             system_fonts: Vec::new(),
@@ -8441,6 +8449,11 @@ impl Studio {
                 pane.update(msg, self);
                 self.voiceover = pane;
             }
+            crate::panes::Msg::Recorder(msg) => {
+                let mut pane = std::mem::take(&mut self.recorder);
+                pane.update(msg, self);
+                self.recorder = pane;
+            }
             crate::panes::Msg::Sounds(msg) => {
                 let mut pane = std::mem::take(&mut self.sounds);
                 pane.update(msg, self);
@@ -10915,6 +10928,12 @@ impl Studio {
         self.publish_source(app);
         sync(&models.voiceover_devices, self.voiceover.device_rows());
         app.set_voiceover(self.voiceover.data(self));
+        sync(
+            &models.recorder_microphones,
+            self.recorder.microphone_rows(),
+        );
+        sync(&models.recorder_cameras, self.recorder.camera_rows());
+        app.set_recorder(self.recorder.data());
         editor.set_recording(self.voiceover.recording());
         editor.set_captions_open(self.captions.open);
         editor.set_speech_open(self.speech.open);
@@ -11357,6 +11376,13 @@ impl Studio {
                     Glyph::Import,
                     &keymap::label(&self.prefs, "import"),
                     true,
+                ),
+                row(
+                    "record-screen",
+                    t("recorder.recordScreen"),
+                    Glyph::Screen,
+                    "",
+                    !platform::phone(),
                 ),
                 row(
                     "save",

@@ -21,6 +21,7 @@ pub mod media_bin;
 pub mod monitor;
 pub mod pace;
 pub mod project;
+pub mod recorder;
 pub mod relink;
 pub mod settings;
 pub mod sounds;
@@ -54,6 +55,8 @@ pub enum Msg {
     Timeline(timeline::TimelineMsg),
     /// To the voiceover take.
     Voiceover(voiceover::VoiceoverMsg),
+    /// To the screen recorder.
+    Recorder(recorder::RecorderMsg),
     /// To the library's Audio page.
     Sounds(sounds::SoundsMsg),
 }

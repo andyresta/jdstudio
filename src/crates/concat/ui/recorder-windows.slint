@@ -1,0 +1,844 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+
+// The screen recorder's two windows of their own, beside the editor's.
+//
+// RecorderBar is the small strip that floats over everything while a
+// recording runs - the count-in, the time, Pause and Stop - with the editor
+// minimised out of the picture. On Windows it is kept out of the capture
+// itself (see recorder.rs), so it never shows up in the recording.
+//
+// AreaPicker covers the screen with a still of it and lets an area be
+// drawn over the still, then moved, resized by its handles or held to a
+// shape from the toolbar: what is framed there is exactly what is recorded,
+// because the still and the recording come from the same device.
+
+import { I18n } from "i18n.slint";
+import { Theme } from "theme/theme.slint";
+import { Glyph, Icon } from "icons.slint";
+import { LevelMeter } from "primitives/level-meter.slint";
+
+component BarButton inherits Rectangle {
+    in property <Glyph> glyph;
+    in property <color> tint: Theme.fg;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: touch.has-hover && root.enabled ? Theme.launch-raised : transparent;
+
+    Icon {
+        glyph: root.glyph;
+        tint: root.enabled ? root.tint : Theme.fg-muted;
+        size: 16px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component RecorderBar inherits Window {
+    /// Seconds still to count in, or 0 once rolling.
+    in property <int> counting;
+    /// "01:23"
+    in property <string> time: "00:00";
+    in property <bool> paused;
+    /// The files are being finished.
+    in property <bool> saving;
+    /// The microphone is recorded, and how loud it is, 0..1.
+    in property <bool> has-mic;
+    in property <float> level;
+
+    callback pause-toggled();
+    callback stop();
+    /// A press on the bar's body: move the window with the pointer.
+    callback drag();
+
+    title: I18n.t("recorder.recordScreen");
+    no-frame: true;
+    always-on-top: true;
+    width: root.has-mic ? 320px : 260px;
+    height: 48px;
+    background: Theme.launch-panel;
+
+    Rectangle {
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.launch-raised;
+        background: Theme.launch-panel;
+
+        TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                    root.drag();
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 8px;
+            spacing: 8px;
+            alignment: stretch;
+
+            // The light: red and steady while rolling, dim while paused.
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    background: root.counting > 0 || root.paused || root.saving
+                        ? Theme.fg-muted : Theme.danger;
+                }
+            }
+
+            Text {
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                text: root.saving ? I18n.t("recorder.saving")
+                    : root.counting > 0 ? I18n.t1("recorder.startingIn", "\{root.counting}")
+                    : root.paused ? I18n.t1("recorder.pausedAt", root.time)
+                    : root.time;
+                color: Theme.fg;
+                font-size: Theme.fs-lg;
+                font-family: Theme.font-technical;
+                font-weight: 600;
+            }
+
+            // The voice going in, so a silent microphone is seen at once.
+            if root.has-mic: HorizontalLayout {
+                spacing: 4px;
+                alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        glyph: Glyph.mic;
+                        size: 13px;
+                        tint: Theme.fg-muted;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    LevelMeter {
+                        width: 44px;
+                        value: root.level;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                BarButton {
+                    glyph: root.paused ? Glyph.play : Glyph.pause;
+                    enabled: root.counting == 0 && !root.saving;
+                    clicked => { root.pause-toggled(); }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                BarButton {
+                    glyph: Glyph.stop;
+                    tint: Theme.danger;
+                    enabled: !root.saving;
+                    clicked => { root.stop(); }
+                }
+            }
+        }
+    }
+}
+
+component ToolButton inherits Rectangle {
+    in property <string> label;
+    in property <Glyph> glyph: Glyph.none;
+    in property <bool> primary;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 32px;
+    min-width: 32px;
+    border-radius: 6px;
+    background: !root.enabled ? transparent
+        : root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : root.active ? Theme.launch-raised
+        : touch.has-hover ? Theme.launch-raised : transparent;
+    border-width: root.active ? 1px : 0px;
+    border-color: Theme.accent;
+    opacity: root.enabled ? 1 : 0.5;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+
+        if root.glyph != Glyph.none: VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.glyph;
+                size: 14px;
+                tint: root.primary ? Theme.on-accent : Theme.fg;
+            }
+        }
+
+        if root.label != "": Text {
+            vertical-alignment: center;
+            text: root.label;
+            font-size: Theme.fs;
+            font-weight: root.primary ? 600 : 400;
+            color: root.primary ? Theme.on-accent : Theme.fg;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The picker toolbar's shapes: free or held to a ratio, or all of it.
+component ShapeTools inherits HorizontalLayout {
+    in property <float> ratio;
+    callback shape(ratio: float);
+    callback whole();
+
+    spacing: 4px;
+
+    ToolButton {
+        label: I18n.t("recorder.free");
+        active: root.ratio == 0;
+        clicked => { root.shape(0); }
+    }
+    ToolButton {
+        label: "16:9";
+        active: root.ratio == 16 / 9;
+        clicked => { root.shape(16 / 9); }
+    }
+    ToolButton {
+        label: "9:16";
+        active: root.ratio == 9 / 16;
+        clicked => { root.shape(9 / 16); }
+    }
+    ToolButton {
+        label: "1:1";
+        active: root.ratio == 1;
+        clicked => { root.shape(1); }
+    }
+    ToolButton {
+        label: "4:3";
+        active: root.ratio == 4 / 3;
+        clicked => { root.shape(4 / 3); }
+    }
+    ToolButton {
+        glyph: Glyph.screen;
+        label: I18n.t("recorder.entireScreen");
+        clicked => { root.whole(); }
+    }
+}
+
+// The picker toolbar's ways out: back, keep the area, or record it now.
+component ActionTools inherits HorizontalLayout {
+    in property <bool> ready;
+    callback cancel();
+    callback use();
+    callback record();
+
+    spacing: 4px;
+
+    ToolButton {
+        label: I18n.t("common.cancel");
+        clicked => { root.cancel(); }
+    }
+    ToolButton {
+        glyph: Glyph.check;
+        label: I18n.t("recorder.useArea");
+        enabled: root.ready;
+        clicked => { root.use(); }
+    }
+    ToolButton {
+        primary: true;
+        label: I18n.t("recorder.startRecording");
+        enabled: root.ready;
+        clicked => { root.record(); }
+    }
+}
+
+// The picker. The selection is kept in the still's own pixels (sx, sy, sw,
+// sh; sw of zero is none) and drawn through `factor`, so the numbers handed
+// back are the ones the recording is cut with.
+//
+// One gesture area reads every press: on a handle it resizes, inside the
+// selection it moves it, anywhere else it draws a new one. A shape picked
+// on the toolbar holds the selection to that ratio while it is drawn or
+// resized from a corner.
+export component AreaPicker inherits Window {
+    /// The still of the screen.
+    in property <image> still;
+    /// Its size in its own pixels.
+    in property <int> still-width: 1;
+    in property <int> still-height: 1;
+    /// The selection, in the still's pixels; a width of zero is none. Rust
+    /// sets it to the last area when the picker opens.
+    in-out property <float> sx;
+    in-out property <float> sy;
+    in-out property <float> sw;
+    in-out property <float> sh;
+    /// The shape the selection is held to: 0 any, else width over height.
+    in-out property <float> ratio;
+
+    /// An area of the still, in its pixels, and whether to start recording
+    /// it at once.
+    callback chosen(x: int, y: int, width: int, height: int, record: bool);
+    callback cancelled();
+
+    title: I18n.t("recorder.selectArea");
+    no-frame: true;
+    always-on-top: true;
+    background: black;
+
+    property <float> still-w: root.still-width;
+    property <float> still-h: root.still-height;
+    // Window pixels per still pixel, and where the still's top left falls.
+    property <float> factor: Math.min(root.width / 1px / root.still-w, root.height / 1px / root.still-h);
+    property <length> left: (root.width - root.still-w * root.factor * 1px) / 2;
+    property <length> top: (root.height - root.still-h * root.factor * 1px) / 2;
+
+    property <bool> has-selection: root.sw >= 1 && root.sh >= 1;
+    // The selection in window coordinates.
+    property <length> wx: root.left + root.sx * root.factor * 1px;
+    property <length> wy: root.top + root.sy * root.factor * 1px;
+    property <length> ww: root.sw * root.factor * 1px;
+    property <length> wh: root.sh * root.factor * 1px;
+    property <bool> big-enough: Math.round(root.sw) >= 16 && Math.round(root.sh) >= 16;
+
+    // The gesture: 0 none, 1 draw, 2 move, 3 nw, 4 ne, 5 sw, 6 se,
+    // 7 n, 8 s, 9 w, 10 e.
+    property <int> mode;
+    property <int> hover: root.zone(gesture.mouse-x, gesture.mouse-y);
+    property <float> down-x;
+    property <float> down-y;
+    property <float> was-x;
+    property <float> was-y;
+    property <float> was-w;
+    property <float> was-h;
+    property <length> grab: 10px;
+
+    pure function still-x(at: length) -> float {
+        return Math.max(0, Math.min(root.still-w, (at - root.left) / 1px / root.factor));
+    }
+    pure function still-y(at: length) -> float {
+        return Math.max(0, Math.min(root.still-h, (at - root.top) / 1px / root.factor));
+    }
+    pure function near(a: length, b: length) -> bool {
+        return Math.abs(a - b) <= root.grab;
+    }
+
+    /// What a press at a window point would do; see `mode`.
+    pure function zone(at-x: length, at-y: length) -> int {
+        if (!root.has-selection) {
+            return 1;
+        }
+        let l = root.wx;
+        let r = root.wx + root.ww;
+        let t = root.wy;
+        let b = root.wy + root.wh;
+        let mid-x = (l + r) / 2;
+        let mid-y = (t + b) / 2;
+        if (root.near(at-x, l) && root.near(at-y, t)) { return 3; }
+        if (root.near(at-x, r) && root.near(at-y, t)) { return 4; }
+        if (root.near(at-x, l) && root.near(at-y, b)) { return 5; }
+        if (root.near(at-x, r) && root.near(at-y, b)) { return 6; }
+        if (root.ratio == 0) {
+            if (root.near(at-x, mid-x) && root.near(at-y, t)) { return 7; }
+            if (root.near(at-x, mid-x) && root.near(at-y, b)) { return 8; }
+            if (root.near(at-x, l) && root.near(at-y, mid-y)) { return 9; }
+            if (root.near(at-x, r) && root.near(at-y, mid-y)) { return 10; }
+        }
+        if (at-x > l && at-x < r && at-y > t && at-y < b) { return 2; }
+        return 1;
+    }
+
+    /// A rectangle from a fixed corner to the pointer, held to the ratio
+    /// and inside the still.
+    function span(ax: float, ay: float, px: float, py: float) {
+        let room-w = px < ax ? ax : root.still-w - ax;
+        let room-h = py < ay ? ay : root.still-h - ay;
+        let free-w = Math.min(Math.abs(px - ax), room-w);
+        let free-h = Math.min(Math.abs(py - ay), room-h);
+        let held-w = Math.min(Math.max(free-w, free-h * root.ratio), room-w, room-h * root.ratio);
+        let w = root.ratio > 0 ? held-w : free-w;
+        let h = root.ratio > 0 ? held-w / root.ratio : free-h;
+        root.sw = w;
+        root.sh = h;
+        root.sx = px < ax ? ax - w : ax;
+        root.sy = py < ay ? ay - h : ay;
+    }
+
+    /// The selection reshaped to `r` around its middle, or a new one in the
+    /// middle of the screen when there is none.
+    function shape(r: float) {
+        root.ratio = r;
+        if (r == 0) {
+            return;
+        }
+        let cx = root.has-selection ? root.sx + root.sw / 2 : root.still-w / 2;
+        let cy = root.has-selection ? root.sy + root.sh / 2 : root.still-h / 2;
+        let start-w = root.has-selection ? root.sw : root.still-w * 0.6;
+        // As wide as it was, then no taller or wider than nine tenths of
+        // the screen.
+        let w = Math.min(start-w, root.still-h * 0.9 * r, root.still-w * 0.9);
+        let h = w / r;
+        root.sw = w;
+        root.sh = h;
+        root.sx = Math.max(0, Math.min(root.still-w - w, cx - w / 2));
+        root.sy = Math.max(0, Math.min(root.still-h - h, cy - h / 2));
+    }
+
+    function whole() {
+        root.ratio = 0;
+        root.sx = 0;
+        root.sy = 0;
+        root.sw = root.still-w;
+        root.sh = root.still-h;
+    }
+
+    function confirm(record: bool) {
+        if (root.has-selection && root.big-enough) {
+            root.chosen(Math.round(root.sx), Math.round(root.sy),
+                Math.round(root.sw), Math.round(root.sh), record);
+        }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancelled();
+                return accept;
+            }
+            if (event.text == Key.Return) {
+                root.confirm(false);
+                return accept;
+            }
+            reject
+        }
+
+        Image {
+            x: root.left;
+            y: root.top;
+            width: root.still-w * root.factor * 1px;
+            height: root.still-h * root.factor * 1px;
+            source: root.still;
+            image-fit: fill;
+        }
+
+        // The veil, everywhere but the selection.
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.has-selection ? root.wy : root.height;
+            background: #00000099;
+        }
+        if root.has-selection: Rectangle {
+            x: 0;
+            y: root.wy + root.wh;
+            width: root.width;
+            height: root.height - root.wy - root.wh;
+            background: #00000099;
+        }
+        if root.has-selection: Rectangle {
+            x: 0;
+            y: root.wy;
+            width: root.wx;
+            height: root.wh;
+            background: #00000099;
+        }
+        if root.has-selection: Rectangle {
+            x: root.wx + root.ww;
+            y: root.wy;
+            width: root.width - root.wx - root.ww;
+            height: root.wh;
+            background: #00000099;
+        }
+
+        // The frame, the thirds while it is being shaped, and the handles.
+        if root.has-selection: Rectangle {
+            x: root.wx - 1px;
+            y: root.wy - 1px;
+            width: root.ww + 2px;
+            height: root.wh + 2px;
+            border-width: 2px;
+            border-color: Theme.accent;
+        }
+        if root.has-selection && root.mode >= 1: Rectangle {
+            x: root.wx + root.ww / 3;
+            y: root.wy;
+            width: 1px;
+            height: root.wh;
+            background: #ffffff55;
+        }
+        if root.has-selection && root.mode >= 1: Rectangle {
+            x: root.wx + root.ww * 2 / 3;
+            y: root.wy;
+            width: 1px;
+            height: root.wh;
+            background: #ffffff55;
+        }
+        if root.has-selection && root.mode >= 1: Rectangle {
+            x: root.wx;
+            y: root.wy + root.wh / 3;
+            width: root.ww;
+            height: 1px;
+            background: #ffffff55;
+        }
+        if root.has-selection && root.mode >= 1: Rectangle {
+            x: root.wx;
+            y: root.wy + root.wh * 2 / 3;
+            width: root.ww;
+            height: 1px;
+            background: #ffffff55;
+        }
+        for handle in (root.has-selection ? (root.ratio == 0 ? 8 : 4) : 0): Rectangle {
+            // Corners first - top left, top right, bottom left, bottom
+            // right - then the middles of the top, bottom, left and right.
+            property <length> hx: handle == 0 || handle == 2 || handle == 6 ? root.wx
+                : handle == 1 || handle == 3 || handle == 7 ? root.wx + root.ww
+                : root.wx + root.ww / 2;
+            property <length> hy: handle == 0 || handle == 1 || handle == 4 ? root.wy
+                : handle == 2 || handle == 3 || handle == 5 ? root.wy + root.wh
+                : root.wy + root.wh / 2;
+            x: self.hx - 7px;
+            y: self.hy - 7px;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            background: white;
+            border-width: 2px;
+            border-color: Theme.accent;
+        }
+
+        // The size, on the selection's top edge.
+        if root.has-selection: Rectangle {
+            x: root.wx;
+            y: root.wy > 34px ? root.wy - 30px : root.wy + 8px;
+            width: size.preferred-width + 14px;
+            height: 22px;
+            border-radius: 4px;
+            background: Theme.accent;
+            size := Text {
+                text: "\{Math.round(root.sw)} × \{Math.round(root.sh)}";
+                color: Theme.on-accent;
+                font-size: Theme.fs;
+                font-family: Theme.font-technical;
+                font-weight: 600;
+            }
+        }
+
+        // With nothing selected yet, say what to do in the middle of it.
+        if !root.has-selection && root.mode == 0: Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: Math.max(empty-title.preferred-width, empty-note.preferred-width) + 56px;
+            height: 84px;
+            border-radius: 14px;
+            background: #000000cc;
+            VerticalLayout {
+                alignment: center;
+                spacing: 6px;
+                empty-title := Text {
+                    horizontal-alignment: center;
+                    text: I18n.t("recorder.pickerEmpty");
+                    color: white;
+                    font-size: 20px;
+                    font-weight: 600;
+                }
+                empty-note := Text {
+                    horizontal-alignment: center;
+                    text: I18n.t("recorder.pickerEmptyNote");
+                    color: #ffffffb0;
+                    font-size: Theme.fs-lg;
+                }
+            }
+        }
+
+        gesture := TouchArea {
+            mouse-cursor: root.mode == 2 ? MouseCursor.grabbing
+                : root.hover == 2 ? MouseCursor.move
+                : root.hover == 3 || root.hover == 6 ? MouseCursor.nwse-resize
+                : root.hover == 4 || root.hover == 5 ? MouseCursor.nesw-resize
+                : root.hover == 7 || root.hover == 8 ? MouseCursor.ns-resize
+                : root.hover == 9 || root.hover == 10 ? MouseCursor.ew-resize
+                : MouseCursor.crosshair;
+            pointer-event(event) => {
+                if (event.button != PointerEventButton.left) {
+                    return;
+                }
+                if (event.kind == PointerEventKind.down) {
+                    root.mode = root.zone(self.mouse-x, self.mouse-y);
+                    root.down-x = root.still-x(self.mouse-x);
+                    root.down-y = root.still-y(self.mouse-y);
+                    root.was-x = root.sx;
+                    root.was-y = root.sy;
+                    root.was-w = root.sw;
+                    root.was-h = root.sh;
+                } else if (event.kind == PointerEventKind.up) {
+                    root.mode = 0;
+                }
+            }
+            moved => {
+                let px = root.still-x(self.mouse-x);
+                let py = root.still-y(self.mouse-y);
+                let right = root.was-x + root.was-w;
+                let bottom = root.was-y + root.was-h;
+                if (root.mode == 1) {
+                    // A new area only once the pointer has really moved, so
+                    // a stray click keeps the one there is.
+                    if (Math.abs(px - root.down-x) * root.factor > 4
+                        || Math.abs(py - root.down-y) * root.factor > 4) {
+                        root.span(root.down-x, root.down-y, px, py);
+                    }
+                } else if (root.mode == 2) {
+                    root.sx = Math.max(0, Math.min(root.still-w - root.sw, root.was-x + px - root.down-x));
+                    root.sy = Math.max(0, Math.min(root.still-h - root.sh, root.was-y + py - root.down-y));
+                } else if (root.mode == 3) {
+                    root.span(right, bottom, px, py);
+                } else if (root.mode == 4) {
+                    root.span(root.was-x, bottom, px, py);
+                } else if (root.mode == 5) {
+                    root.span(right, root.was-y, px, py);
+                } else if (root.mode == 6) {
+                    root.span(root.was-x, root.was-y, px, py);
+                } else if (root.mode == 7) {
+                    root.sy = Math.min(py, bottom - 16);
+                    root.sh = bottom - root.sy;
+                } else if (root.mode == 8) {
+                    root.sh = Math.max(16, py - root.was-y);
+                } else if (root.mode == 9) {
+                    root.sx = Math.min(px, right - 16);
+                    root.sw = right - root.sx;
+                } else if (root.mode == 10) {
+                    root.sw = Math.max(16, px - root.was-x);
+                }
+            }
+            double-clicked => {
+                if (root.zone(self.mouse-x, self.mouse-y) == 2) {
+                    root.confirm(false);
+                }
+            }
+        }
+
+        // How it works, along the top, once there is something to adjust.
+        if root.has-selection && root.mode == 0: Rectangle {
+            x: (root.width - self.width) / 2;
+            y: 16px;
+            width: hint.preferred-width + 28px;
+            height: 32px;
+            border-radius: 16px;
+            background: #000000c0;
+            hint := Text {
+                text: I18n.t("recorder.pickerHint");
+                color: white;
+                font-size: Theme.fs;
+            }
+        }
+
+        // The toolbar: below the selection where there is room, above it
+        // where not, inside its foot when it fills the screen, and at the
+        // foot of the screen while there is none. The shapes and the
+        // actions sit side by side where the screen is wide enough and one
+        // above the other where not, so no button is ever cut off.
+        toolbar := Rectangle {
+            property <length> gap: 8px;
+            property <bool> wide: shapes.preferred-width + actions.preferred-width + 3 * self.gap + 1px
+                <= root.width - 32px;
+            property <length> below: root.wy + root.wh + 12px;
+            property <length> above: root.wy - 12px - self.height;
+            x: Math.max(16px, Math.min(root.width - self.width - 16px,
+                root.has-selection ? root.wx + root.ww / 2 - self.width / 2
+                    : (root.width - self.width) / 2));
+            y: !root.has-selection ? root.height - self.height - 48px
+                : self.below + self.height < root.height - 16px ? self.below
+                : self.above > 16px ? self.above
+                : root.wy + root.wh - self.height - 16px;
+            width: self.wide
+                ? shapes.preferred-width + actions.preferred-width + 3 * self.gap + 1px
+                : Math.max(shapes.preferred-width, actions.preferred-width) + 2 * self.gap;
+            height: self.wide ? 48px : 88px;
+            border-radius: 12px;
+            background: Theme.launch-panel;
+            border-width: 1px;
+            border-color: Theme.launch-raised;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000080;
+            visible: root.mode == 0;
+
+            // Presses on the bar's own body go nowhere else.
+            TouchArea { }
+
+            shapes := ShapeTools {
+                x: parent.gap;
+                y: parent.gap;
+                width: self.preferred-width;
+                height: 32px;
+                ratio: root.ratio;
+                shape(r) => { root.shape(r); }
+                whole => { root.whole(); }
+            }
+
+            if toolbar.wide: Rectangle {
+                x: shapes.x + shapes.width + toolbar.gap / 2;
+                y: 12px;
+                width: 1px;
+                height: 24px;
+                background: Theme.launch-raised;
+            }
+
+            actions := ActionTools {
+                x: parent.wide ? shapes.x + shapes.width + parent.gap + 1px
+                    : (parent.width - self.width) / 2;
+                y: parent.wide ? parent.gap : 48px;
+                width: self.preferred-width;
+                height: 32px;
+                ready: root.has-selection && root.big-enough;
+                cancel => { root.cancelled(); }
+                use => { root.confirm(false); }
+                record => { root.confirm(true); }
+            }
+        }
+    }
+
+    init => { keys.focus(); }
+}
+
+// The camera, live, floating over everything from the moment it is picked
+// until the recording stops: proof that it is the right camera and that it
+// is on. Dragged by its body; its eye folds it into a small pill with the
+// camera mark and a grip, and the mark unfolds it again. Like the bar it
+// is kept out of the screen capture on Windows - the camera is recorded on
+// its own and laid over the screen in the editor.
+export component CameraPanel inherits Window {
+    /// The latest picture, mirrored as a mirror shows a face.
+    in property <image> picture;
+    /// Folded into the pill.
+    in property <bool> collapsed;
+    /// A picture has arrived.
+    in property <bool> live;
+    /// 0 a rectangle, 1 rounded corners, 2 a circle.
+    in property <int> shape;
+
+    callback toggled();
+    callback drag();
+
+    title: I18n.t("recorder.camera");
+    no-frame: true;
+    always-on-top: true;
+    background: root.collapsed ? Theme.launch-panel : black;
+
+    // Drawn in its shape here too, for where the window itself cannot be
+    // cut to it (everywhere but Windows).
+    if !root.collapsed: Rectangle {
+        border-radius: root.shape == 2 ? self.width / 2 : root.shape == 1 ? 20px : 0px;
+        clip: true;
+        background: black;
+
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.picture;
+            image-fit: cover;
+        }
+
+        if !root.live: Text {
+            text: I18n.t("recorder.cameraWaiting");
+            color: #ffffffb0;
+            font-size: Theme.fs;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        TouchArea {
+            mouse-cursor: move;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                    root.drag();
+                }
+            }
+        }
+
+        // Fold it away: at the top right, or the top middle of a circle,
+        // where the corner is cut off.
+        Rectangle {
+            x: root.shape == 2 ? (parent.width - self.width) / 2 : parent.width - self.width - 8px;
+            y: root.shape == 2 ? 12px : 8px;
+            width: 28px;
+            height: 28px;
+            border-radius: 14px;
+            background: hide.has-hover ? #000000d0 : #00000090;
+            Icon {
+                glyph: Glyph.eye-off;
+                size: 14px;
+                tint: white;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+            hide := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.toggled(); }
+            }
+        }
+    }
+
+    if root.collapsed: HorizontalLayout {
+        padding: 4px;
+        spacing: 2px;
+
+        // Unfold it.
+        Rectangle {
+            width: 36px;
+            border-radius: 8px;
+            background: show.has-hover ? Theme.launch-raised : transparent;
+            Icon {
+                glyph: Glyph.camera;
+                size: 18px;
+                tint: Theme.accent;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+            show := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.toggled(); }
+            }
+        }
+
+        // The grip: the pill is moved by it.
+        Rectangle {
+            width: 20px;
+            for dot in 6: Rectangle {
+                x: (dot < 3 ? 6px : 11px);
+                y: parent.height / 2 - 8px + Math.mod(dot, 3) * 6px;
+                width: 3px;
+                height: 3px;
+                border-radius: 1.5px;
+                background: Theme.fg-muted;
+            }
+            TouchArea {
+                mouse-cursor: move;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        root.drag();
+                    }
+                }
+            }
+        }
+    }
+}

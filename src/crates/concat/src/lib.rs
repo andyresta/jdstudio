@@ -402,6 +402,8 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         app.global::<Sounds>()
             .set_styles(ModelRc::from(models.voice_styles.clone()));
         app.set_voiceover_devices(ModelRc::from(models.voiceover_devices.clone()));
+        app.set_recorder_microphones(ModelRc::from(models.recorder_microphones.clone()));
+        app.set_recorder_cameras(ModelRc::from(models.recorder_cameras.clone()));
         app.set_app_menu_items(ModelRc::from(models.bar.clone()));
         app.set_transcribers(ModelRc::from(models.transcribers.clone()));
         app.set_voices(ModelRc::from(models.voices.clone()));
@@ -1716,6 +1718,42 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         state.handle(Msg::Relink(RelinkMsg::Dismiss));
     }));
 
+    // The screen recorder: from the launch screen it makes a new project,
+    // from the editor's bin it records into the open one.
+    {
+        use crate::panes::recorder::RecorderMsg;
+        app.on_recorder_open(on_window!(|state| {
+            state.handle(Msg::Recorder(RecorderMsg::Open));
+        }));
+        editor.on_record_screen(on_window!(|state| {
+            state.handle(Msg::Recorder(RecorderMsg::Open));
+        }));
+        app.on_recorder_mode_changed(on_window!(|state, index: i32| {
+            state.handle(Msg::Recorder(RecorderMsg::Mode(index)));
+        }));
+        app.on_recorder_pick_area(on_window!(|state| {
+            state.handle(Msg::Recorder(RecorderMsg::PickArea));
+        }));
+        app.on_recorder_microphone_changed(on_window!(|state, index: i32| {
+            state.handle(Msg::Recorder(RecorderMsg::Microphone(index)));
+        }));
+        app.on_recorder_camera_changed(on_window!(|state, index: i32| {
+            state.handle(Msg::Recorder(RecorderMsg::Camera(index)));
+        }));
+        app.on_recorder_camera_shape_changed(on_window!(|state, index: i32| {
+            state.handle(Msg::Recorder(RecorderMsg::CameraShape(index)));
+        }));
+        app.on_recorder_fps_changed(on_window!(|state, index: i32| {
+            state.handle(Msg::Recorder(RecorderMsg::Fps(index)));
+        }));
+        app.on_recorder_record(on_window!(|state| {
+            state.handle(Msg::Recorder(RecorderMsg::Record));
+        }));
+        app.on_recorder_dismiss(on_window!(|state| {
+            state.handle(Msg::Recorder(RecorderMsg::Close));
+        }));
+    }
+
     // ── the dialogs ──
     app.on_export_clicked(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Open));
@@ -2099,6 +2137,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                     state.open_menu = -1;
                     match action.as_str() {
                         "add-selected" => state.handle(Msg::Media(MediaMsg::AddSelectedAtPlayhead)),
+                        "record-screen" => {
+                            state.handle(Msg::Recorder(crate::panes::recorder::RecorderMsg::Open))
+                        }
                         // The launch screen's own verb, from the menu bar:
                         // the picker, the check and the notice are all one
                         // implementation in panes/start.rs, so the two
