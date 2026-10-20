@@ -32,6 +32,7 @@ import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { AvatarData } from "primitives/avatar.slint";
 import { VoiceoverData, VoiceoverPanel } from "dialogs/voiceover.slint";
 import { RecorderData, RecorderDialog, RecorderLoading } from "dialogs/recorder.slint";
+import { AssistantData, AssistantPanel, ChatItem } from "assistant.slint";
 import { AreaPicker, CameraPanel, RecorderBar } from "recorder-windows.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor } from "editor.slint";
@@ -68,7 +69,7 @@ export {
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     ChipOption, RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
     CaptionsSheetData, SpeechSheetData, VoiceoverData, SoundCardData, Sounds, VoiceCardData,
-    RecorderData, RecorderBar, AreaPicker, CameraPanel,
+    RecorderData, RecorderBar, AreaPicker, CameraPanel, AssistantData, ChatItem,
 }
 
 export component App inherits Window {
@@ -584,6 +585,8 @@ export component App inherits Window {
                 open-settings => { root.open-settings(); }
                 add-pane(kind) => { Editor.dock-add(kind); }
                 export-clicked => { root.export-clicked(); }
+                assistant-open: root.assistant.open;
+                assistant-toggled => { root.assistant-toggle(); }
             }
 
             if root.on-start: StartScreen {
@@ -615,8 +618,34 @@ export component App inherits Window {
             // nothing is passed to it: it is a box with four seats in it, and
             // the views inside those seats reach the state directly. See
             // editor.slint.
-            if !root.on-start && !root.phone: Workspace {
+            // The editor, and the assistant's panel beside it when it is open.
+            if !root.on-start && !root.phone: HorizontalLayout {
                 vertical-stretch: 1;
+
+                Workspace {
+                    horizontal-stretch: 1;
+                }
+
+                if root.assistant.open: AssistantPanel {
+                    width: root.assistant-width;
+                    horizontal-stretch: 0;
+                    data: root.assistant;
+                    items: root.assistant-items;
+                    providers: root.assistant-providers;
+                    models: root.assistant-models;
+                    send(text) => { root.assistant-send(text); }
+                    stop => { root.assistant-stop(); }
+                    clear => { root.assistant-clear(); }
+                    close => { root.assistant-toggle(); }
+                    toggle-settings => { root.assistant-toggle-settings(); }
+                    provider-changed(index) => { root.assistant-provider-changed(index); }
+                    model-picked(index) => { root.assistant-model-picked(index); }
+                    base-url-edited(text) => { root.assistant-base-url-edited(text); }
+                    connect(key) => { root.assistant-connect(key); }
+                    remove-key => { root.assistant-remove-key(); }
+                    resized(width) => { root.assistant-width = width; }
+                    resize-done => { root.assistant-resized(root.assistant-width / 1px); }
+                }
             }
 
             // The phone's editor reads the same global; only the shell round
@@ -893,6 +922,25 @@ export component App inherits Window {
     in property <[string]> recorder-microphones;
     in property <[string]> recorder-cameras;
     in property <image> recorder-preview;
+
+    // The assistant's panel (assistant.slint).
+    in property <AssistantData> assistant;
+    in property <[ChatItem]> assistant-items;
+    in property <[string]> assistant-providers;
+    in property <[string]> assistant-models;
+    /// The panel's width, dragged from its left edge and remembered.
+    in-out property <length> assistant-width: 380px;
+    callback assistant-resized(width: float);
+    callback assistant-toggle();
+    callback assistant-send(text: string);
+    callback assistant-stop();
+    callback assistant-clear();
+    callback assistant-toggle-settings();
+    callback assistant-provider-changed(index: int);
+    callback assistant-model-picked(index: int);
+    callback assistant-base-url-edited(text: string);
+    callback assistant-connect(key: string);
+    callback assistant-remove-key();
     /// The picked microphone's level, 0..1, for the sheet's meter.
     in property <float> recorder-level;
     callback recorder-open();

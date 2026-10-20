@@ -36,6 +36,13 @@ pub struct Preferences {
     /// The screen recorder's camera shape: 0 a rectangle, 1 rounded
     /// corners, 2 a circle.
     pub recorder_camera_shape: u8,
+    /// The assistant's provider, by preset id; its model, and the address
+    /// requests go to. The API key is never here: see assistant/keys.rs.
+    pub assistant_provider: Option<String>,
+    pub assistant_model: Option<String>,
+    pub assistant_base_url: Option<String>,
+    /// The assistant panel's width in logical pixels, as last dragged.
+    pub assistant_width: Option<f32>,
     /// The accent, by the lower-cased name the theme lists it under —
     /// "lime", "sky", ... — or as "#rrggbb" for a colour picked by hand.
     /// `None`, or a name no longer on the list, is the first one, which is

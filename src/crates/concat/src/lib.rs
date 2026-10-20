@@ -31,6 +31,7 @@ mod ui {
     slint::include_modules!();
 }
 
+mod assistant;
 mod batch_volume;
 mod chips;
 mod dock;
@@ -325,6 +326,10 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // https://github.com/jub0t/Concat/issues/320
     app.global::<Theme>()
         .set_ui_scale(studio.prefs.scale_index() as i32);
+    // The assistant panel opens at the width it was last dragged to.
+    if let Some(width) = studio.prefs.assistant_width {
+        app.set_assistant_width(width.clamp(300.0, 900.0));
+    }
 
     let shell = Rc::new(Shell {
         app: app.as_weak(),
@@ -404,6 +409,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         app.set_voiceover_devices(ModelRc::from(models.voiceover_devices.clone()));
         app.set_recorder_microphones(ModelRc::from(models.recorder_microphones.clone()));
         app.set_recorder_cameras(ModelRc::from(models.recorder_cameras.clone()));
+        app.set_assistant_items(ModelRc::from(models.assistant_items.clone()));
+        app.set_assistant_providers(ModelRc::from(models.assistant_providers.clone()));
+        app.set_assistant_models(ModelRc::from(models.assistant_models.clone()));
         app.set_app_menu_items(ModelRc::from(models.bar.clone()));
         app.set_transcribers(ModelRc::from(models.transcribers.clone()));
         app.set_voices(ModelRc::from(models.voices.clone()));
@@ -1717,6 +1725,44 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_relink_dismiss(on_window!(|state| {
         state.handle(Msg::Relink(RelinkMsg::Dismiss));
     }));
+
+    // The assistant's panel: a chat that edits the open project.
+    {
+        use crate::panes::assistant::AssistantMsg;
+        app.on_assistant_toggle(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::Toggle));
+        }));
+        app.on_assistant_send(on_window!(|state, text: SharedString| {
+            state.handle(Msg::Assistant(AssistantMsg::Send(text.to_string())));
+        }));
+        app.on_assistant_stop(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::Stop));
+        }));
+        app.on_assistant_clear(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::Clear));
+        }));
+        app.on_assistant_toggle_settings(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::ToggleSettings));
+        }));
+        app.on_assistant_provider_changed(on_window!(|state, index: i32| {
+            state.handle(Msg::Assistant(AssistantMsg::Provider(index)));
+        }));
+        app.on_assistant_model_picked(on_window!(|state, index: i32| {
+            state.handle(Msg::Assistant(AssistantMsg::ModelPicked(index)));
+        }));
+        app.on_assistant_base_url_edited(on_window!(|state, text: SharedString| {
+            state.handle(Msg::Assistant(AssistantMsg::BaseUrl(text.to_string())));
+        }));
+        app.on_assistant_connect(on_window!(|state, key: SharedString| {
+            state.handle(Msg::Assistant(AssistantMsg::Connect(key.to_string())));
+        }));
+        app.on_assistant_remove_key(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::RemoveKey));
+        }));
+        app.on_assistant_resized(on_window!(|state, width: f32| {
+            state.handle(Msg::Assistant(AssistantMsg::Resized(width)));
+        }));
+    }
 
     // The screen recorder: from the launch screen it makes a new project,
     // from the editor's bin it records into the open one.

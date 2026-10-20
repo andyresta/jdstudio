@@ -675,6 +675,10 @@ pub struct Models {
     /// The screen recorder's microphones and cameras, "None" first.
     pub recorder_microphones: Rc<VecModel<SharedString>>,
     pub recorder_cameras: Rc<VecModel<SharedString>>,
+    /// The assistant's conversation, and its provider and model lists.
+    pub assistant_items: Rc<VecModel<crate::ui::ChatItem>>,
+    pub assistant_providers: Rc<VecModel<SharedString>>,
+    pub assistant_models: Rc<VecModel<SharedString>>,
     pub speech_sample_waves: Rc<VecModel<SharedString>>,
     pub speech_sample_details: Rc<VecModel<SharedString>>,
     /// The Audio page's shelves.
@@ -753,6 +757,9 @@ impl Models {
             voiceover_devices: Rc::new(VecModel::default()),
             recorder_microphones: Rc::new(VecModel::default()),
             recorder_cameras: Rc::new(VecModel::default()),
+            assistant_items: Rc::new(VecModel::default()),
+            assistant_providers: Rc::new(VecModel::default()),
+            assistant_models: Rc::new(VecModel::default()),
             speech_sample_waves: Rc::new(VecModel::default()),
             speech_sample_details: Rc::new(VecModel::default()),
             sounds_mine: Rc::new(VecModel::default()),
@@ -1011,6 +1018,8 @@ pub struct Studio {
     pub voiceover: crate::panes::voiceover::VoiceoverPane,
     /// The screen recorder.
     pub recorder: crate::panes::recorder::RecorderPane,
+    /// The assistant's panel.
+    pub assistant: crate::panes::assistant::AssistantPane,
     /// Every speaker the voice engine offers, in its own order.
     /// The looks the Text page offers; see `presets`.
     pub text_presets: Vec<TextPreset>,
@@ -2340,6 +2349,7 @@ impl Studio {
             meters: crate::meters::MeterFeed::default(),
             voiceover: crate::panes::voiceover::VoiceoverPane::default(),
             recorder: crate::panes::recorder::RecorderPane::default(),
+            assistant: crate::panes::assistant::AssistantPane::default(),
             text_presets,
             installed_fonts: presets::installed_fonts(&host.dirs),
             system_fonts: Vec::new(),
@@ -2712,6 +2722,38 @@ impl Studio {
                 None
             }
         }
+    }
+
+    /// [`Studio::apply`] for the assistant: the same edit, but a refusal is
+    /// handed back for the model to read rather than shown as a notice, and
+    /// the whole view comes back, as the API answers.
+    pub fn apply_for_agent(
+        &mut self,
+        command: Command,
+    ) -> Result<concat_host::session::EditorView, concat_api::ApiError> {
+        self.end_burst();
+        log::info!("edit (assistant): {}", command_name(&command));
+        self.flush_commit();
+        self.echo = None;
+        self.last_commit = None;
+        let session = self.session.as_mut().ok_or_else(|| {
+            concat_api::ApiError::new(concat_api::ErrorCode::NotOpen, "no project is open")
+        })?;
+        match session.apply(command) {
+            Ok(view) => {
+                self.after_change();
+                Ok(view)
+            }
+            Err(error) => Err(concat_api::ApiError::new(
+                concat_api::ErrorCode::Refused,
+                error,
+            )),
+        }
+    }
+
+    /// What follows an edit the assistant made to the session directly.
+    pub fn after_agent_change(&mut self) {
+        self.after_change();
     }
 
     /// [`Studio::apply`] as one move of an inspector gesture: the same
@@ -8454,6 +8496,11 @@ impl Studio {
                 pane.update(msg, self);
                 self.recorder = pane;
             }
+            crate::panes::Msg::Assistant(msg) => {
+                let mut pane = std::mem::take(&mut self.assistant);
+                pane.update(msg, self);
+                self.assistant = pane;
+            }
             crate::panes::Msg::Sounds(msg) => {
                 let mut pane = std::mem::take(&mut self.sounds);
                 pane.update(msg, self);
@@ -10934,6 +10981,10 @@ impl Studio {
         );
         sync(&models.recorder_cameras, self.recorder.camera_rows());
         app.set_recorder(self.recorder.data());
+        sync(&models.assistant_items, self.assistant.item_rows());
+        sync(&models.assistant_providers, self.assistant.provider_rows());
+        sync(&models.assistant_models, self.assistant.model_rows(self));
+        app.set_assistant(self.assistant.data(self));
         editor.set_recording(self.voiceover.recording());
         editor.set_captions_open(self.captions.open);
         editor.set_speech_open(self.speech.open);
