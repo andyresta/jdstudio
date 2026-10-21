@@ -95,6 +95,8 @@ pub struct Finished {
 #[derive(Default)]
 struct Control {
     stop: AtomicBool,
+    /// The moment Stop was pressed: every file runs to it.
+    stopped_at: Mutex<Option<Instant>>,
     paused: AtomicBool,
     failed: Mutex<Option<String>>,
 }
@@ -342,6 +344,17 @@ impl Recording {
     /// encoders drain - a second or two - so it belongs on a worker.
     pub fn stop(mut self) -> Result<Finished, String> {
         self.resume();
+        // One moment for every file to end at: the sound is cut there, by
+        // when it was heard, and the pictures held up to it.
+        let at = Instant::now();
+        for sound in self.sounds() {
+            sound.cut_at(at);
+        }
+        *self
+            .control
+            .stopped_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(at);
         self.control.stop.store(true, Ordering::Release);
         let voice = match self.microphone.take() {
             Some(mic) => Some(mic.end()?),
@@ -491,6 +504,8 @@ fn roll_inner(
     let mut written: u64 = 0;
     let mut paused_since: Option<Instant> = None;
     let mut paused_for = Duration::ZERO;
+    // The last picture written, to hold to the end.
+    let mut last: Option<Frame> = None;
     while !control.stop.load(Ordering::Acquire) {
         // Nothing to be had: the slots go by holding the last picture.
         let Some(frame) = grabber.grab()? else {
@@ -534,9 +549,29 @@ fn roll_inner(
         sink.write_frame_at(&frame, slot)
             .map_err(|error| error.to_string())?;
         written = slot + 1;
+        last = Some(frame);
     }
     match (encoder, first) {
         (Some(mut sink), Some(first)) => {
+            // Held up to Stop: the last picture may have come a while
+            // before it, and the sound runs to it.
+            let stopped_at = *control
+                .stopped_at
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let (Some(at), Some(frame)) = (stopped_at, &last) {
+                let held = paused_since
+                    .map_or(Duration::ZERO, |since| at.saturating_duration_since(since));
+                let active = at
+                    .saturating_duration_since(first)
+                    .saturating_sub(paused_for + held);
+                let slot = (active.as_secs_f64() * f64::from(fps)) as u64;
+                if slot > written {
+                    // The slot before the end, so the file lasts to it.
+                    sink.write_frame_at(frame, slot - 1)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
             sink.finish().map_err(|error| error.to_string())?;
             Ok(Some((path.to_path_buf(), size.0, size.1, first)))
         }
@@ -609,7 +644,8 @@ mod tests {
     /// `CONCAT_RECORD_MINUTES` (twenty unless set) and says how far apart
     /// the files end and how much each sound was pulled into step; run by
     /// hand: `cargo test -p concat-host screen::tests::a_long -- --ignored
-    /// --nocapture`.
+    /// --nocapture`. With `CONCAT_BURN` set, every core is kept busy for
+    /// twenty seconds in every forty, to see it hold under load.
     #[test]
     #[ignore = "needs a screen, a camera and a microphone, and takes twenty minutes"]
     fn a_long_recording_stays_in_step() {
@@ -635,7 +671,30 @@ mod tests {
             None,
         )
         .expect("starts");
-        std::thread::sleep(Duration::from_secs_f64(minutes * 60.0));
+        let until = Instant::now() + Duration::from_secs_f64(minutes * 60.0);
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_secs(20));
+            if std::env::var("CONCAT_BURN").is_ok() {
+                let stop = Arc::new(AtomicBool::new(false));
+                let burners: Vec<_> = (0..16)
+                    .map(|_| {
+                        let stop = Arc::clone(&stop);
+                        std::thread::spawn(move || {
+                            let mut x = 1u64;
+                            while !stop.load(Ordering::Relaxed) {
+                                x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                            }
+                            x
+                        })
+                    })
+                    .collect();
+                std::thread::sleep(Duration::from_secs(20));
+                stop.store(true, Ordering::Relaxed);
+                for burner in burners {
+                    let _ = burner.join();
+                }
+            }
+        }
         let finished = recording.stop().expect("stops");
         let ends: Vec<(&str, f64, i64)> = [
             ("screen", Some(&finished.screen)),

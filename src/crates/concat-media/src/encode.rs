@@ -512,6 +512,7 @@ fn opens(codec: VideoCodec, encoder_name: &'static str) -> bool {
         tags,
         None,
         true,
+        false,
     );
     if let Err(error) = &result {
         log::info!("{encoder_name} does not open here: {error}");
@@ -606,6 +607,7 @@ fn open_video(
     ),
     hdr: Option<Signal>,
     global_header: bool,
+    live: bool,
 ) -> Result<(encoder::video::Encoder, Pixel)> {
     let pq = hdr == Some(Signal::Pq);
     let family = Family::of(encoder_name);
@@ -640,6 +642,15 @@ fn open_video(
     }
     if global_header {
         video.set_flags(ffmpeg::codec::Flags::GLOBAL_HEADER);
+    }
+    if live {
+        // A keyframe, and so a fragment on disk, every two seconds; and no
+        // B-frames, so each picture is stored in the order it was taken
+        // and the last one written - however long after the one before -
+        // is the last in the file, which ends where it says.
+        let fps = (f64::from(rate.numerator()) / f64::from(rate.denominator().max(1))).round();
+        video.set_gop((fps.max(1.0) * 2.0) as u32);
+        video.set_max_b_frames(0);
     }
     if pq {
         // The display it was mastered on, where an encoder that writes
@@ -1250,6 +1261,7 @@ impl Encoder {
                 tags,
                 hdr,
                 global_header,
+                live,
             ) {
                 Ok((encoder, pixel_format)) => {
                     // Opening proves the chip, for the export sheet's label.
@@ -1932,28 +1944,38 @@ mod tests {
     /// last slot, and only the frames given were encoded.
     #[test]
     fn frames_written_at_slots_hold_over_the_gaps() {
-        let path =
-            std::env::temp_dir().join(format!("concat-media-slots-{}.mp4", std::process::id()));
-        let options = EncodeOptions {
-            preset: "veryfast".to_owned(),
-            hardware: false,
-            ..EncodeOptions::default()
-        };
-        let mut encoder =
-            Encoder::create_live(&path, 320, 180, FrameRate::THIRTY, &options).expect("opens");
-        let frame = Frame::black(320, 180);
-        for slot in (0..90).step_by(3) {
-            encoder.write_frame_at(&frame, slot).expect("writes");
+        // With the machine's own encoder too: the last picture, written
+        // long after the one before it, is where the file ends either way.
+        for hardware in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "concat-media-slots-{hardware}-{}.mp4",
+                std::process::id()
+            ));
+            let options = EncodeOptions {
+                preset: "veryfast".to_owned(),
+                hardware,
+                ..EncodeOptions::default()
+            };
+            let mut encoder =
+                Encoder::create_live(&path, 320, 180, FrameRate::THIRTY, &options).expect("opens");
+            let mut frame = Frame::black(320, 180);
+            for slot in (0..90).step_by(3) {
+                frame.pixels_mut()[slot as usize * 4] = 255;
+                encoder.write_frame_at(&frame, slot).expect("writes");
+            }
+            assert!(
+                encoder.write_frame_at(&frame, 10).is_err(),
+                "behind the last"
+            );
+            // Held to the tenth second, as a recording is held to Stop.
+            encoder.write_frame_at(&frame, 299).expect("writes");
+            let name = encoder.encoder_name();
+            encoder.finish().expect("finishes");
+            let summary = crate::probe(&path).expect("reads");
+            let _ = std::fs::remove_file(&path);
+            let seconds = summary.duration.map_or(0.0, |d| d.as_f64());
+            assert!((9.9..=10.1).contains(&seconds), "{name}: {seconds}s");
         }
-        assert!(
-            encoder.write_frame_at(&frame, 10).is_err(),
-            "behind the last"
-        );
-        encoder.finish().expect("finishes");
-        let summary = crate::probe(&path).expect("reads");
-        let _ = std::fs::remove_file(&path);
-        let seconds = summary.duration.map_or(0.0, |d| d.as_f64());
-        assert!((2.9..=3.1).contains(&seconds), "{seconds}s");
     }
 
     #[test]
@@ -2382,6 +2404,7 @@ mod tests {
             tags,
             None,
             true,
+            false,
         )
         .expect("opens");
         assert_eq!(format, Pixel::NV12);
