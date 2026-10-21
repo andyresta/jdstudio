@@ -887,6 +887,7 @@
   "timeline.deleteTrackEmpty": "এই খালি ট্র্যাকটি মুছে যাবে। এটি পূর্বাবস্থায় ফেরাতে পারবেন।",
   "timeline.deleteTrackOneClip": "এই ট্র্যাক এবং এতে থাকা ক্লিপটি মুছে যাবে। এটি পূর্বাবস্থায় ফেরাতে পারবেন।",
   "timeline.deleteTrackTitle": "ট্র্যাক মুছবেন?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "ফ্রিজ",
   "timelinePane.mirror": "মিরর",
   "timelinePane.previewVideoAndAudio": "ভিডিও ও অডিও প্রিভিউ",

@@ -887,6 +887,7 @@
   "timeline.deleteTrackEmpty": "这条空轨道将被删除。你可以撤销此操作。",
   "timeline.deleteTrackOneClip": "这条轨道及其上的片段将被删除。你可以撤销此操作。",
   "timeline.deleteTrackTitle": "删除轨道？",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "定格",
   "timelinePane.mirror": "镜像",
   "timelinePane.previewVideoAndAudio": "预览视频和音频",

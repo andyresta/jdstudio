@@ -440,6 +440,14 @@ export component Seat inherits Rectangle {
             }
             clip-split(id, seconds) => { Editor.clip-split(id, seconds); }
             clip-volume(id, gain) => { Editor.clip-volume(id, gain); }
+            clip-volume-key-added(id, at) => { Editor.clip-volume-key-added(id, at); }
+            clip-volume-key-dragged(id, index, at, gain) => {
+                Editor.clip-volume-key-dragged(id, index, at, gain);
+            }
+            clip-volume-ride(id, at, gain) => { Editor.clip-volume-ride(id, at, gain); }
+            clip-volume-released => { Editor.clip-volume-released(); }
+            clip-volume-key-removed(id, index) => { Editor.clip-volume-key-removed(id, index); }
+            clip-volume-key-context(id, index) => { Editor.clip-volume-key-context(id, index); }
             clip-dragged(seconds, pixels) => { Editor.clip-dragged(seconds, pixels); }
             clip-released => { Editor.clip-released(); }
             menu-items: Editor.menu-items;

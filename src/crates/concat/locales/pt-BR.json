@@ -887,6 +887,7 @@
   "timeline.deleteTrackEmpty": "Esta faixa vazia será excluída. Você pode desfazer isso.",
   "timeline.deleteTrackOneClip": "Esta faixa e o clipe nela serão excluídos. Você pode desfazer isso.",
   "timeline.deleteTrackTitle": "Excluir a faixa?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "Congelar",
   "timelinePane.mirror": "Espelho",
   "timelinePane.previewVideoAndAudio": "Prévia de vídeo e áudio",

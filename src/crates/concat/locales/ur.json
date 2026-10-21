@@ -887,6 +887,7 @@
   "timeline.deleteTrackEmpty": "یہ خالی ٹریک حذف ہو جائے گا۔ آپ اسے واپس لے سکتے ہیں۔",
   "timeline.deleteTrackOneClip": "یہ ٹریک اور اس پر موجود کلپ حذف ہو جائیں گے۔ آپ اسے واپس لے سکتے ہیں۔",
   "timeline.deleteTrackTitle": "ٹریک حذف کریں؟",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "منجمد کریں",
   "timelinePane.mirror": "عکس",
   "timelinePane.previewVideoAndAudio": "ویڈیو اور آڈیو کا پیش منظر",

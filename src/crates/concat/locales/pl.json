@@ -887,6 +887,7 @@
   "timeline.deleteTrackEmpty": "Ta pusta ścieżka zostanie usunięta. Możesz to cofnąć.",
   "timeline.deleteTrackOneClip": "Ta ścieżka i klip na niej zostaną usunięte. Możesz to cofnąć.",
   "timeline.deleteTrackTitle": "Usunąć ścieżkę?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "Stopklatka",
   "timelinePane.mirror": "Odbicie lustrzane",
   "timelinePane.previewVideoAndAudio": "Podgląd wideo i dźwięku",

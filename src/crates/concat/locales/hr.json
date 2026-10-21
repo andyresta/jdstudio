@@ -887,6 +887,7 @@
   "timeline.deleteTrackEmpty": "Ova prazna traka bit će izbrisana. To možeš poništiti.",
   "timeline.deleteTrackOneClip": "Ova traka i isječak na njoj bit će izbrisani. To možeš poništiti.",
   "timeline.deleteTrackTitle": "Izbrisati traku?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "Zamrzni",
   "timelinePane.mirror": "Ogledalo",
   "timelinePane.previewVideoAndAudio": "Pregled videa i zvuka",
