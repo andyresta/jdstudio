@@ -888,6 +888,7 @@
   "timeline.deleteTrackEmpty": "Đường trống này sẽ bị xóa. Bạn có thể hoàn tác.",
   "timeline.deleteTrackOneClip": "Đường này và clip trên đó sẽ bị xóa. Bạn có thể hoàn tác.",
   "timeline.deleteTrackTitle": "Xóa đường?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "Đóng băng",
   "timelinePane.mirror": "Lật gương",
   "timelinePane.previewVideoAndAudio": "Xem trước video và âm thanh",

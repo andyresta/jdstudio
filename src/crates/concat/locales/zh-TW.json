@@ -888,6 +888,7 @@
   "timeline.deleteTrackEmpty": "這條空軌道將被刪除。你可以復原此操作。",
   "timeline.deleteTrackOneClip": "這條軌道及其上的片段將被刪除。你可以復原此操作。",
   "timeline.deleteTrackTitle": "刪除軌道？",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "定格",
   "timelinePane.mirror": "鏡像",
   "timelinePane.previewVideoAndAudio": "預覽影片和音訊",

@@ -35,6 +35,7 @@ mod assistant;
 mod batch_volume;
 mod chips;
 mod dock;
+mod envelope;
 mod fonts;
 mod format;
 mod gpu;
@@ -1087,6 +1088,37 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_clip_volume(on_lanes!(|state, id: SharedString, gain: f32| {
         state.clip_volume(&id, gain);
     }));
+    // The volume envelope: points put on, dragged and taken off the line.
+    editor.on_clip_volume_key_added(on_lanes!(|state, id: SharedString, at: f32| {
+        state.volume_key_added(&id, at);
+    }));
+    editor.on_clip_volume_key_dragged(on_lanes!(
+        |state, id: SharedString, index: i32, at: f32, gain: f32| {
+            if let Ok(index) = usize::try_from(index) {
+                state.volume_key_dragged(&id, index, at, gain);
+            }
+        }
+    ));
+    editor.on_clip_volume_ride(on_lanes!(|state, id: SharedString, at: f32, gain: f32| {
+        state.volume_ride_dragged(&id, at, gain);
+    }));
+    editor.on_clip_volume_released(on_lanes!(|state| {
+        state.volume_released();
+    }));
+    editor.on_clip_volume_key_removed(on_lanes!(|state, id: SharedString, index: i32| {
+        if let Ok(index) = usize::try_from(index) {
+            state.volume_key_removed(&id, index);
+        }
+    }));
+    editor.on_clip_volume_key_context(on_window!(|state, id: SharedString, index: i32| {
+        state.menu_token += 1;
+        state.menu_media = None;
+        state.menu_target = None;
+        state.menu_volume_key = usize::try_from(index)
+            .ok()
+            .filter(|_| state.clip(id.as_str()).is_some())
+            .map(|index| (id.to_string(), index));
+    }));
     editor.on_save_frame(on_window!(|state| {
         state.save_frame_as();
     }));
@@ -1498,6 +1530,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_clip_context(on_window!(|state, id: SharedString| {
         state.menu_token += 1;
         state.menu_media = None;
+        state.menu_volume_key = None;
         if state.clip(id.as_str()).is_none() {
             state.menu_target = None;
             return;
@@ -1512,12 +1545,19 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_media_context(on_window!(|state, row: i32| {
         state.menu_token += 1;
         state.menu_target = None;
+        state.menu_volume_key = None;
         state.menu_media = state
             .media
             .by_row(state.project(), row)
             .map(|item| item.id.clone());
     }));
     editor.on_menu_selected(on_window!(|state, action: SharedString| {
+        if let Some((id, index)) = state.menu_volume_key.take() {
+            if action.as_str() == "delete-volume-point" {
+                state.volume_key_removed(&id, index);
+            }
+            return;
+        }
         if let Some(id) = state.menu_media.clone() {
             state.media_action(&id, action.as_str());
             return;

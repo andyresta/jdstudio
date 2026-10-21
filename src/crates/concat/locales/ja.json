@@ -888,6 +888,7 @@
   "timeline.deleteTrackEmpty": "この空のトラックを削除します。元に戻すことができます。",
   "timeline.deleteTrackOneClip": "このトラックと、その上のクリップを削除します。元に戻すことができます。",
   "timeline.deleteTrackTitle": "トラックを削除しますか?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "フリーズ",
   "timelinePane.mirror": "ミラー",
   "timelinePane.previewVideoAndAudio": "映像と音声をプレビュー",

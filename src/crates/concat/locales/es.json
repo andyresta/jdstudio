@@ -888,6 +888,7 @@
   "timeline.deleteTrackEmpty": "Se eliminará esta pista vacía. Puedes deshacerlo.",
   "timeline.deleteTrackOneClip": "Se eliminarán esta pista y el clip que contiene. Puedes deshacerlo.",
   "timeline.deleteTrackTitle": "¿Eliminar la pista?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "Congelar",
   "timelinePane.mirror": "Espejo",
   "timelinePane.previewVideoAndAudio": "Previsualizar vídeo y audio",

@@ -888,6 +888,7 @@
   "timeline.deleteTrackEmpty": "यह खाली ट्रैक मिटा दिया जाएगा। आप इसे पहले जैसा कर सकते हैं।",
   "timeline.deleteTrackOneClip": "यह ट्रैक और इस पर मौजूद क्लिप मिटा दी जाएगी। आप इसे पहले जैसा कर सकते हैं।",
   "timeline.deleteTrackTitle": "ट्रैक मिटाएं?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "फ़्रीज़",
   "timelinePane.mirror": "मिरर",
   "timelinePane.previewVideoAndAudio": "वीडियो और ऑडियो प्रीव्यू करें",

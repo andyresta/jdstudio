@@ -5,7 +5,7 @@ import { Wave } from "../primitives/wave.slint";
 import { Theme } from "../theme/theme.slint";
 import { Fmt, Payload } from "../util.slint";
 import { Glyph, Icon } from "../icons.slint";
-import { ClipData, ClipKind, DropData, TimelineTool, TrackData } from "model.slint";
+import { ClipData, ClipKind, DropData, TimelineTool, TrackData, VolumePointData } from "model.slint";
 import { ContextMenu, MenuItemData } from "../primitives/context-menu.slint";
 
 // The lanes: the ruler, the banded track stack, the clips on it, the playhead
@@ -138,6 +138,17 @@ component Clip inherits Rectangle {
     /// The volume line dragged to `gain` - linear, 1 being unity, 2 the
     /// top of the band - while the drag lasts.
     callback volume-dragged(gain: float);
+    /// The volume envelope: a double-click on the line puts a point `at`
+    /// along the clip (`0..=1`); point `index` dragged toward `at` and
+    /// `gain`; the line between points held at `at` and dragged to `gain`,
+    /// which takes the whole ride with it; either drag let go; a point
+    /// double-clicked off; a point right-clicked for its menu.
+    callback volume-key-added(at: float);
+    callback volume-key-dragged(index: int, at: float, gain: float);
+    callback volume-ride(at: float, gain: float);
+    callback volume-released();
+    callback volume-key-removed(index: int);
+    callback volume-key-context(index: int);
     /// Window-space delta since the press: seconds across, pixels down. Not
     /// lanes down — the lanes differ in height, so which row a drag has
     /// reached is a question only the side holding the heights can answer.
@@ -628,7 +639,7 @@ component Clip inherits Rectangle {
     property <length> volume-y: root.sound-top
         + root.sound-h * (1 - Math.clamp(root.shown-gain, 0, 2) / 2);
 
-    if root.sounded && root.sound-h >= 12px && !root.locked: Rectangle {
+    if root.sounded && root.sound-h >= 12px && !root.locked && !root.keyed: Rectangle {
         x: 0;
         y: root.volume-y - 1px;
         width: parent.width;
@@ -639,7 +650,7 @@ component Clip inherits Rectangle {
         opacity: (root.volume-hover || root.volume-live) ? 1.0 : 0.7;
     }
 
-    if root.sounded && root.sound-h >= 12px && !root.locked: volume-grab := TouchArea {
+    if root.sounded && root.sound-h >= 12px && !root.locked && !root.keyed: volume-grab := TouchArea {
         x: 0;
         y: root.volume-y - 5px;
         width: parent.width;
@@ -674,10 +685,15 @@ component Clip inherits Rectangle {
                 root.volume-dragged(root.drag-gain);
             }
         }
+        // A point where the line was double-clicked, at the volume it is.
+        double-clicked => {
+            root.volume-live = false;
+            root.volume-key-added(Math.clamp(self.mouse-x / Math.max(1px, root.width), 0, 1));
+        }
     }
 
     // What the line is at, while it is held or hovered.
-    if root.sounded && root.sound-h >= 12px && !root.locked
+    if root.sounded && root.sound-h >= 12px && !root.locked && !root.keyed
         && (root.volume-live || root.volume-hover): Rectangle {
         x: 6px;
         y: Math.max(root.header-h, root.volume-y - self.height - 4px);
@@ -690,6 +706,263 @@ component Clip inherits Rectangle {
             x: 5px;
             height: parent.height;
             text: "\{Math.round(root.shown-gain * 100)} %";
+            color: Colors.black;
+            font-family: Theme.font-technical;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+        }
+    }
+
+    // ── the volume envelope ───────────────────────────────────────────────
+    //
+    // The line once the volume rides: through a point per key, flat before
+    // the first and after the last, bending where a stretch is eased. The
+    // flat line above is the same line with no points on it, and a
+    // double-click on either puts one down, at the volume it already is.
+    //
+    // A point drags up and down for its volume, unity snapping, and along
+    // the clip between its neighbours; a double-click or its menu's Delete
+    // takes it off. The line between points drags the whole ride up or
+    // down with it - every point by the same number of decibels, so a
+    // shape keeps its shape - the way the flat line drags the clip's one
+    // volume. Rust holds the ride, so what is drawn while a drag lasts is
+    // the echo it draws from, and the release is one undo step.
+    property <bool> keyed: root.item.volume-keys.length > 0;
+    property <bool> envelope-shown: root.sounded && root.sound-h >= 12px && root.keyed;
+    /// y of a gain on the sound, the floor silence and the top twice unity.
+    pure function gain-y(gain: float) -> length {
+        return root.sound-top + root.sound-h * (1 - Math.clamp(gain, 0, 2) / 2);
+    }
+    /// The point being dragged, and the one under the pointer; -1 for none.
+    property <int> key-held: -1;
+    property <int> key-hover: -1;
+    /// The line between points: held, the piece of it under the pointer
+    /// (-1 for none), and the gain and x the label shows for it.
+    property <bool> ride-live;
+    property <int> ride-hover: -1;
+    property <float> ride-gain;
+    property <length> ride-x;
+    property <bool> envelope-lit: root.key-held >= 0 || root.key-hover >= 0
+        || root.ride-live || root.ride-hover >= 0;
+
+    if root.envelope-shown: Path {
+        x: 0;
+        y: root.sound-top;
+        width: parent.width;
+        height: root.sound-h;
+        viewbox-width: 1;
+        viewbox-height: 1;
+        fit: fill;
+        // White as the flat line is, and for its reason.
+        stroke: root.locked ? Colors.white.with-alpha(0.35)
+            : root.envelope-lit ? Colors.white : Colors.white.with-alpha(0.75);
+        stroke-width: root.envelope-lit ? 2px : 1.5px;
+        commands: root.item.volume-path;
+    }
+
+    // The line, as the pointer finds it: a short box over each straight
+    // piece of it, so a steep stretch is grabbed where it is drawn and not
+    // across the whole of its height. Over the clip's own touch area, so
+    // the grab is the line's; the points are over these.
+    if root.envelope-shown && !root.locked: Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+
+        for sample[i] in root.item.volume-samples: TouchArea {
+            property <VolumePointData> prev: i > 0 ? root.item.volume-samples[i - 1] : sample;
+            property <length> prev-y: root.gain-y(self.prev.value);
+            property <length> to-y: root.gain-y(sample.value);
+            property <length> origin-y;
+            property <float> origin-at;
+            property <float> origin-gain;
+            property <bool> travelled;
+            /// The gain the piece is at, under the pointer.
+            pure function here() -> float {
+                return self.prev.value + (sample.value - self.prev.value)
+                    * Math.clamp(self.mouse-x / Math.max(1px, self.width), 0, 1);
+            }
+
+            x: self.prev.at * root.width;
+            y: Math.min(self.prev-y, self.to-y) - 5px;
+            width: Math.max(0px, (sample.at - self.prev.at) * root.width);
+            height: Math.abs(self.to-y - self.prev-y) + 10px;
+            mouse-cursor: MouseCursor.ns-resize;
+
+            changed has-hover => {
+                if (self.has-hover) {
+                    root.ride-hover = i;
+                } else if (root.ride-hover == i) {
+                    root.ride-hover = -1;
+                }
+            }
+            changed mouse-x => {
+                if (self.has-hover && !root.ride-live) {
+                    root.ride-gain = self.here();
+                    root.ride-x = self.x + self.mouse-x;
+                }
+            }
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.right) {
+                    if (event.kind == PointerEventKind.up) {
+                        root.context-requested();
+                    }
+                    return;
+                }
+                if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.left) {
+                    self.origin-y = self.absolute-position.y + self.mouse-y;
+                    self.origin-at = Math.clamp((self.x + self.mouse-x) / Math.max(1px, root.width), 0, 1);
+                    self.origin-gain = self.here();
+                    self.travelled = false;
+                    root.ride-gain = self.origin-gain;
+                    root.ride-x = self.x + self.mouse-x;
+                    root.ride-live = true;
+                } else if (event.kind == PointerEventKind.up
+                    || event.kind == PointerEventKind.cancel) {
+                    if (root.ride-live) {
+                        root.ride-live = false;
+                        root.volume-released();
+                    }
+                }
+            }
+            moved => {
+                if (root.ride-live && root.sound-h > 0px) {
+                    let dy = self.absolute-position.y + self.mouse-y - self.origin-y;
+                    if (Math.abs(dy) > 2px) {
+                        self.travelled = true;
+                    }
+                    if (self.travelled) {
+                        let gain = Math.clamp(self.origin-gain - dy / root.sound-h * 2, 0, 2);
+                        root.ride-gain = Math.abs(gain - 1) < 0.04 ? 1 : gain;
+                        root.volume-ride(self.origin-at, root.ride-gain);
+                    }
+                }
+            }
+            double-clicked => {
+                root.ride-live = false;
+                root.volume-key-added(Math.clamp((self.x + self.mouse-x) / Math.max(1px, root.width), 0, 1));
+            }
+        }
+    }
+
+    // The points. Drawn on a locked lane too, without their grab: the
+    // shape of the ride is worth seeing whether or not it can be changed.
+    if root.envelope-shown: Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+
+        for key[i] in root.item.volume-keys: Rectangle {
+            property <bool> lit: root.key-held == i || root.key-hover == i;
+            // The grab is wider than the dot, so a point is easy to find
+            // at any zoom without the dot covering the line.
+            x: key.at * root.width - self.width / 2;
+            y: root.gain-y(key.value) - self.height / 2;
+            width: 14px;
+            height: 14px;
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: parent.lit ? 10px : 8px;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: root.locked ? Colors.white.with-alpha(0.4) : Colors.white;
+                border-width: 1px;
+                border-color: parent.lit ? Theme.accent : Colors.black.with-alpha(0.55);
+            }
+
+            if !root.locked: TouchArea {
+                property <length> origin-x;
+                property <length> origin-y;
+                property <float> origin-at;
+                property <float> origin-gain;
+                property <bool> travelled;
+
+                mouse-cursor: MouseCursor.move;
+                changed has-hover => {
+                    if (self.has-hover) {
+                        root.key-hover = i;
+                    } else if (root.key-hover == i) {
+                        root.key-hover = -1;
+                    }
+                }
+                pointer-event(event) => {
+                    if (event.button == PointerEventButton.right) {
+                        if (event.kind == PointerEventKind.up) {
+                            root.volume-key-context(i);
+                        }
+                        return;
+                    }
+                    if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.left) {
+                        self.origin-x = self.absolute-position.x + self.mouse-x;
+                        self.origin-y = self.absolute-position.y + self.mouse-y;
+                        self.origin-at = key.at;
+                        self.origin-gain = key.value;
+                        self.travelled = false;
+                        root.key-held = i;
+                    } else if (event.kind == PointerEventKind.up
+                        || event.kind == PointerEventKind.cancel) {
+                        if (root.key-held == i) {
+                            root.key-held = -1;
+                            root.volume-released();
+                        }
+                    }
+                }
+                // Window space, as the clip's own drag is measured: the
+                // point moves under the pointer, so a delta against its own
+                // origin would cancel itself out.
+                moved => {
+                    if (root.key-held == i && root.sound-h > 0px) {
+                        let dx = self.absolute-position.x + self.mouse-x - self.origin-x;
+                        let dy = self.absolute-position.y + self.mouse-y - self.origin-y;
+                        if (Math.abs(dx) > 2px || Math.abs(dy) > 2px) {
+                            self.travelled = true;
+                        }
+                        if (self.travelled) {
+                            let gain = Math.clamp(self.origin-gain - dy / root.sound-h * 2, 0, 2);
+                            root.volume-key-dragged(i,
+                                self.origin-at + dx / Math.max(1px, root.width),
+                                Math.abs(gain - 1) < 0.04 ? 1 : gain);
+                        }
+                    }
+                }
+                double-clicked => {
+                    root.key-held = -1;
+                    root.key-hover = -1;
+                    root.volume-key-removed(i);
+                }
+            }
+        }
+    }
+
+    // What the ride is at: the point held or hovered, or the line under
+    // the pointer.
+    property <int> key-shown: root.key-held >= 0 ? root.key-held : root.key-hover;
+    property <bool> key-shown-valid: root.key-shown >= 0
+        && root.key-shown < root.item.volume-keys.length;
+    property <float> envelope-gain: root.key-shown-valid
+        ? root.item.volume-keys[root.key-shown].value
+        : root.ride-gain;
+    property <length> envelope-x: root.key-shown-valid
+        ? root.item.volume-keys[root.key-shown].at * root.width
+        : root.ride-x;
+    if root.envelope-shown && !root.locked && root.envelope-lit: Rectangle {
+        x: Math.max(0px, Math.min(parent.width - self.width, root.envelope-x + 9px));
+        y: Math.max(root.header-h, root.gain-y(root.envelope-gain) - self.height - 6px);
+        width: envelope-label.preferred-width + 10px;
+        height: 16px;
+        border-radius: Theme.r-sm;
+        background: Colors.white;
+
+        envelope-label := Text {
+            x: 5px;
+            height: parent.height;
+            text: "\{Math.round(root.envelope-gain * 100)} %";
             color: Colors.black;
             font-family: Theme.font-technical;
             font-size: Theme.fs-sm;
@@ -1112,6 +1385,13 @@ export component Lanes inherits Rectangle {
     callback clip-split(id: string, seconds: float);
     /// A clip's volume line dragged to `gain`.
     callback clip-volume(id: string, gain: float);
+    /// A clip's volume envelope; see `Clip.volume-key-added` and after.
+    callback clip-volume-key-added(id: string, at: float);
+    callback clip-volume-key-dragged(id: string, index: int, at: float, gain: float);
+    callback clip-volume-ride(id: string, at: float, gain: float);
+    callback clip-volume-released();
+    callback clip-volume-key-removed(id: string, index: int);
+    callback clip-volume-key-context(id: string, index: int);
     callback clip-dragged(seconds: float, pixels: length);
     callback clip-released();
     /// Right-click on a clip. The caller fills the menu and bumps `menu-token`;
@@ -1524,6 +1804,20 @@ export component Lanes inherits Rectangle {
                 root.clip-split(entry.id, entry.start + x / root.px-per-second);
             }
             volume-dragged(gain) => { root.clip-volume(entry.id, gain); }
+            volume-key-added(at) => { root.clip-volume-key-added(entry.id, at); }
+            volume-key-dragged(index, at, gain) => {
+                root.clip-volume-key-dragged(entry.id, index, at, gain);
+            }
+            volume-ride(at, gain) => { root.clip-volume-ride(entry.id, at, gain); }
+            volume-released => { root.clip-volume-released(); }
+            volume-key-removed(index) => { root.clip-volume-key-removed(entry.id, index); }
+            // The point's own menu, opened where the clip's would be.
+            volume-key-context(index) => {
+                menu.request-x = wheel.mouse-x;
+                menu.request-y = wheel.mouse-y;
+                root.asked = true;
+                root.clip-volume-key-context(entry.id, index);
+            }
             // The clip reports its delta from the press; a view that has
             // scrolled since then is added, so the clip stays under the
             // pointer while the edge scrolls it along.

@@ -888,6 +888,7 @@
   "timeline.deleteTrackEmpty": "سيُحذف هذا المسار الفارغ. يمكنك التراجع عن ذلك.",
   "timeline.deleteTrackOneClip": "سيُحذف هذا المسار والمقطع الذي عليه. يمكنك التراجع عن ذلك.",
   "timeline.deleteTrackTitle": "حذف المسار؟",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "تجميد",
   "timelinePane.mirror": "عكس مرآتي",
   "timelinePane.previewVideoAndAudio": "معاينة الفيديو والصوت",

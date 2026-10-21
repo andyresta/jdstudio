@@ -82,6 +82,13 @@ export struct StripData {
     span: float,
 }
 
+/// One point of a clip's volume ride: where along the clip, `0..=1`, and
+/// the gain there, linear, 1 being unity.
+export struct VolumePointData {
+    at: float,
+    value: float,
+}
+
 /// One placed clip, already reduced to what drawing it needs.
 ///
 /// Positions are in *seconds*, not pixels. Zoom and pan are then a property
@@ -112,6 +119,17 @@ export struct ClipData {
     fade-out: float,
     /// linear gain, 1 being unity — the drawn waveform follows it
     volume: float,
+    /// The volume ride's keys, in order; empty when the volume is the one
+    /// number above. Each is a point on the line, to drag or delete.
+    volume-keys: [VolumePointData],
+    /// The ride sampled from the clip's start to its end, eased stretches
+    /// in short straight pieces: what the line is drawn through and what
+    /// the pointer finds it by. Empty with no keys.
+    volume-samples: [VolumePointData],
+    /// The same samples as path commands in a 1x1 box - across the clip,
+    /// down the sound band from twice unity to silence - for a `fit: fill`
+    /// Path, the way `wave` is drawn.
+    volume-path: string,
     /// a title's words, for the body of a text clip
     text-body: string,
     /// The audio envelope as SVG path commands in a 1x1 viewbox, or empty.

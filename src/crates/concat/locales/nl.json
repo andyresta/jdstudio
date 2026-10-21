@@ -888,6 +888,7 @@
   "timeline.deleteTrackEmpty": "Dit lege spoor wordt verwijderd. Je kunt dit ongedaan maken.",
   "timeline.deleteTrackOneClip": "Dit spoor en de clip erop worden verwijderd. Je kunt dit ongedaan maken.",
   "timeline.deleteTrackTitle": "Spoor verwijderen?",
+  "timeline.deleteVolumePoint": "Delete volume point",
   "timelinePane.freeze": "Bevriezen",
   "timelinePane.mirror": "Spiegelen",
   "timelinePane.previewVideoAndAudio": "Video en audio voorvertonen",
