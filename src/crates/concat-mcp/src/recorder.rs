@@ -15,10 +15,17 @@
 //! A recording lives as long as the session: one still running when the
 //! client goes is stopped and its files finished, as the window's recorder
 //! finishes its files when it is closed mid-take.
+//!
+//! The recorder is shared between threads - the assistant keeps one toolbox
+//! for every turn, each turn on a thread of its own - so a recording started
+//! in one turn can be stopped in the next. That holds on every platform:
+//! the microphone's stream never leaves the thread that opened it, so a
+//! [`Recording`] may.
 
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use concat_api::{ApiError, ErrorCode, Request};
 use concat_host::screen::{self, CameraShape, Finished, Plan, Recording, Track};
@@ -40,8 +47,8 @@ enum Job {
 /// Every recording of this session, by its job id.
 #[derive(Default)]
 pub struct Recorder {
-    jobs: RefCell<HashMap<String, Job>>,
-    next: Cell<u64>,
+    jobs: Mutex<HashMap<String, Job>>,
+    next: AtomicU64,
 }
 
 fn invalid(why: &str) -> ApiError {
@@ -183,6 +190,14 @@ fn finished_view(job: &str, finished: &Finished) -> Value {
 }
 
 impl Recorder {
+    /// The jobs, even after a tool panicked holding them: each job is whole
+    /// on its own, so the rest are still good.
+    fn jobs(&self) -> MutexGuard<'_, HashMap<String, Job>> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// `recorder_start`.
     pub fn start(&self, arguments: &Value, roots: &[PathBuf]) -> Result<Value, ApiError> {
         let fields = fields(
@@ -234,7 +249,7 @@ impl Recorder {
         let camera = text(fields, "camera")?.map(str::to_owned);
         let microphone = text(fields, "microphone")?.map(str::to_owned);
 
-        let mut jobs = self.jobs.borrow_mut();
+        let mut jobs = self.jobs();
         if let Some((running, _)) = jobs.iter().find(|(_, job)| matches!(job, Job::Running(_))) {
             return Err(ApiError::new(
                 ErrorCode::Busy,
@@ -253,8 +268,7 @@ impl Recorder {
             None,
         )
         .map_err(|error| ApiError::failed(format!("the recording would not start: {error}")))?;
-        let number = self.next.get() + 1;
-        self.next.set(number);
+        let number = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let job = format!("r{number}");
         jobs.insert(job.clone(), Job::Running(recording));
         Ok(json!({
@@ -270,7 +284,7 @@ impl Recorder {
     /// `recorder_status`.
     pub fn status(&self, arguments: &Value) -> Result<Value, ApiError> {
         let job = job_of(fields(arguments, &["job"])?)?;
-        let jobs = self.jobs.borrow();
+        let jobs = self.jobs();
         match jobs.get(&job) {
             Some(Job::Running(recording)) => Ok(json!({
                 "job": job,
@@ -292,7 +306,7 @@ impl Recorder {
             Some(Value::Bool(paused)) => *paused,
             Some(_) => return Err(invalid("`paused` is true or false")),
         };
-        match self.jobs.borrow_mut().get_mut(&job) {
+        match self.jobs().get_mut(&job) {
             Some(Job::Running(recording)) => {
                 if paused {
                     recording.pause();
@@ -317,7 +331,7 @@ impl Recorder {
     /// gives its files again.
     pub fn stop(&self, arguments: &Value) -> Result<Value, ApiError> {
         let job = job_of(fields(arguments, &["job"])?)?;
-        let mut jobs = self.jobs.borrow_mut();
+        let mut jobs = self.jobs();
         let finished = match jobs.remove(&job) {
             Some(Job::Running(recording)) => recording
                 .stop()
@@ -351,7 +365,7 @@ impl Recorder {
             Some(word) => CameraShape::parse(word)
                 .ok_or_else(|| invalid("`cameraShape` is rectangle, rounded or circle"))?,
         };
-        let finished = match self.jobs.borrow().get(&job) {
+        let finished = match self.jobs().get(&job) {
             Some(Job::Stopped(finished)) => finished.clone(),
             Some(Job::Running(_)) => {
                 return Err(ApiError::new(
@@ -515,6 +529,12 @@ pub fn schema(tool: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_recorder_can_be_shared_between_threads() {
+        fn shared<T: Send + Sync>() {}
+        shared::<Recorder>();
+    }
 
     #[test]
     fn a_folder_outside_the_roots_is_refused() {
