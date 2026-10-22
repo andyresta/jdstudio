@@ -77,7 +77,7 @@ ggml-cpu-ivybridge.dll         16    0     0      0          0
 ggml.dll                       32    0     0      0          0
 whisper.dll                    48    0     0      0          0
 
-# Concat itself. It holds dispatched code of its own - memchr, aho-corasick
+# The program itself, jdstudio (Concat's concat). It holds dispatched code of its own - memchr, aho-corasick
 # and ring choose AVX2 or BMI2 paths at run time (ring's hand-written
 # cryptography is where mulx and rorx come from), and Skia carries its
 # Haswell and Skylake-X stages beside the baseline ones - so the vector
@@ -92,5 +92,5 @@ whisper.dll                    48    0     0      0          0
 # prints each binary's counts. Once it has, set the limit a margin above
 # the count shown, without the `~`, so the next library compiled for
 # Haswell fails the build.
-concat.exe                     -     -     ~1000  -          -
-concat                         -     -     ~1000  -          -
+jdstudio.exe                   -     -     ~1000  -          -
+jdstudio                       -     -     ~1000  -          -
