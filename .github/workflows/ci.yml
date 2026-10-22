@@ -148,9 +148,27 @@ jobs:
       # public item without documentation fails here, not in review. Lints
       # before tests: they finish in a fraction of the time and catch the
       # most.
+      # A cold cache compiles whisper.cpp, Skia's bindings and the
+      # workspace at once, and the runner's 16 GB ran out: GitHub stopped
+      # it partway through clippy ("received a shutdown signal") on
+      # JDStudio's first runs. Swap on the runner's scratch disk carries
+      # the peak; the numbers go to the log in case it is ever not enough.
+      - name: More swap
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+          df -h / /mnt
       - run: cargo clippy --workspace --all-targets -- -D warnings
-        timeout-minutes: 25
+        timeout-minutes: 40
         working-directory: src
+      - name: Memory and disk after clippy
+        if: always()
+        run: free -h && df -h / /mnt
 
       # The tests are compiled in a step of their own, so a slow compile
       # and a slow test are told apart by which step ran out of time. One
