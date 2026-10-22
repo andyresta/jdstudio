@@ -202,7 +202,15 @@ impl Recorder {
     pub fn start(&self, arguments: &Value, roots: &[PathBuf]) -> Result<Value, ApiError> {
         let fields = fields(
             arguments,
-            &["folder", "path", "area", "fps", "camera", "microphone"],
+            &[
+                "folder",
+                "path",
+                "area",
+                "fps",
+                "camera",
+                "microphone",
+                "system_audio",
+            ],
         )?;
         let folder = match (text(fields, "folder")?, text(fields, "path")?) {
             (Some(folder), None) => PathBuf::from(folder),
@@ -248,6 +256,16 @@ impl Recorder {
         };
         let camera = text(fields, "camera")?.map(str::to_owned);
         let microphone = text(fields, "microphone")?.map(str::to_owned);
+        let system_audio = match fields.get("system_audio") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(on)) => *on,
+            Some(_) => return Err(invalid("`system_audio` is true or false")),
+        };
+        if system_audio && !concat_host::record::system_audio_available() {
+            return Err(invalid(
+                "`system_audio` records what the computer plays, which this platform cannot",
+            ));
+        }
 
         let mut jobs = self.jobs();
         if let Some((running, _)) = jobs.iter().find(|(_, job)| matches!(job, Job::Running(_))) {
@@ -263,7 +281,9 @@ impl Recorder {
                 fps,
                 camera: camera.clone(),
                 microphone: microphone.clone(),
+                system_audio,
             },
+            None,
             None,
             None,
         )
@@ -278,6 +298,7 @@ impl Recorder {
             "fps": fps,
             "camera": camera,
             "microphone": microphone,
+            "system_audio": system_audio,
         }))
     }
 
@@ -497,6 +518,7 @@ pub fn schema(tool: &str) -> Option<Value> {
                 "fps": { "type": "integer", "minimum": 1, "maximum": 60, "default": 30, "description": "Screen pictures a second, usually 30 or 60." },
                 "camera": { "type": "string", "description": "A camera's `id` from recorder_devices, to record beside the screen." },
                 "microphone": { "type": "string", "description": "A microphone's name from recorder_devices, to record beside the screen." },
+                "system_audio": { "type": "boolean", "default": false, "description": "Record what the computer plays too, as a sound track of its own. Windows only." },
             },
         }),
         "recorder_status" | "recorder_stop" => json!({
