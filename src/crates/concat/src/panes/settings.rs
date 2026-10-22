@@ -195,7 +195,7 @@ pub struct SettingsPane {
     pub transcribers: Vec<ModelState>,
     /// The voice models, installed or not.
     pub voices: Vec<ModelState>,
-    /// The Version page's list: the stable releases from 0.2.5 on, newest
+    /// The Version page's list: the stable releases from 0.0.1 on, newest
     /// first, once GitHub has been asked.
     pub releases: Vec<Release>,
     /// Which of `releases` the page's dropdown shows.

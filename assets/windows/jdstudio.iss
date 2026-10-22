@@ -1,13 +1,13 @@
-; Concat's Windows installer.
+; JDStudio's Windows installer.
 ;
 ; Built by build-app.yml with Inno Setup from the staged folder the .msi
 ; is also made of, so the two ship the same files; this is the one a
-; person double-clicks, and it puts Concat in the Start menu and can take
+; person double-clicks, and it puts JDStudio in the Start menu and can take
 ; it out again. Everything it needs is handed in on the command line:
 ;
 ;   iscc /DVersion=0.2.8 /DArch=x64compatible /DSuffix=x86_64 ^
-;        /DStage=C:\...\stage\Concat-0.2.8-windows-x86_64 /DOut=C:\...\stage ^
-;        assets\windows\concat.iss
+;        /DStage=C:\...\stage\JDStudio-0.2.8-windows-x86_64 /DOut=C:\...\stage ^
+;        assets\windows\jdstudio.iss
 ;
 ; Arch is Inno's own word for the machine: x64compatible for the x86_64
 ; build (which also installs on ARM PCs, under emulation), arm64 for the
@@ -32,23 +32,23 @@
 [Setup]
 ; One id for the life of the product, so an install over an older one is
 ; an upgrade and not a second copy.
-AppId={{7B1E5C3A-3B9E-4F0B-9C6D-2F1D0C0A0C47}
-AppName=Concat
+AppId={{3D8F2A61-5C47-4E9B-A1D2-7E6B9C4F0A53}
+AppName=JDStudio
 AppVersion={#Version}
-AppVerName=Concat {#Version}
-AppPublisher=Concat contributors
-AppPublisherURL=https://github.com/jub0t/Concat
-AppSupportURL=https://github.com/jub0t/Concat/issues
-AppUpdatesURL=https://github.com/jub0t/Concat/releases
-DefaultDirName={autopf}\Concat
-DefaultGroupName=Concat
+AppVerName=JDStudio {#Version}
+AppPublisher=JDStudio contributors
+AppPublisherURL=https://github.com/andyresta/jdstudio
+AppSupportURL=https://github.com/andyresta/jdstudio/issues
+AppUpdatesURL=https://github.com/andyresta/jdstudio/releases
+DefaultDirName={autopf}\JDStudio
+DefaultGroupName=JDStudio
 DisableProgramGroupPage=yes
 LicenseFile=..\..\LICENSE
 OutputDir={#Out}
-OutputBaseFilename=Concat-{#Version}-windows-{#Suffix}-setup
-SetupIconFile=..\icons\concat.ico
-UninstallDisplayIcon={app}\concat.ico
-UninstallDisplayName=Concat
+OutputBaseFilename=JDStudio-{#Version}-windows-{#Suffix}-setup
+SetupIconFile=..\icons\jdstudio.ico
+UninstallDisplayIcon={app}\jdstudio.ico
+UninstallDisplayName=JDStudio
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -105,11 +105,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#Stage}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\icons\concat.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\icons\jdstudio.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Concat"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"
-Name: "{autodesktop}\Concat"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"; Tasks: desktopicon
+Name: "{autoprograms}\JDStudio"; Filename: "{app}\jdstudio.exe"; IconFilename: "{app}\jdstudio.ico"
+Name: "{autodesktop}\JDStudio"; Filename: "{app}\jdstudio.exe"; IconFilename: "{app}\jdstudio.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\concat.exe"; Description: "{cm:LaunchProgram,Concat}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\jdstudio.exe"; Description: "{cm:LaunchProgram,JDStudio}"; Flags: nowait postinstall skipifsilent

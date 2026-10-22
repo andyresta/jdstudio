@@ -37,8 +37,9 @@ use crate::models;
 pub const REPO: &str = "andyresta/jdstudio";
 
 /// The first release with a Version page: the earliest one a person can
-/// come back from, so the earliest one offered.
-pub const FIRST_SWITCHABLE: Version = Version::new(0, 2, 5);
+/// come back from, so the earliest one offered. JDStudio's first release,
+/// 0.0.1, already has it.
+pub const FIRST_SWITCHABLE: Version = Version::new(0, 0, 1);
 
 /// GitHub's list of the repository's releases, newest first. A hundred
 /// covers years of releases at this pace.
@@ -675,7 +676,7 @@ fn get_text(url: &str) -> Result<String, String> {
         .build();
     let response = agent
         .get(url)
-        .set("User-Agent", &format!("Concat/{}", Version::current()))
+        .set("User-Agent", &format!("JDStudio/{}", Version::current()))
         .set("Accept", "application/vnd.github+json")
         .call()
         .map_err(|error| match error {
@@ -711,7 +712,7 @@ mod tests {
         assert!(Version::new(1, 0, 0) > Version::new(0, 9, 9));
         assert_eq!(Version::new(0, 2, 5).to_string(), "0.2.5");
         assert_eq!(Version::new(0, 2, 5).tag(), "v0.2.5");
-        assert!(Version::current() >= Version::new(0, 2, 4));
+        assert!(Version::current() >= FIRST_SWITCHABLE);
     }
 
     const RELEASES: &str = r#"[
@@ -720,7 +721,7 @@ mod tests {
         {"tag_name": "v0.3.0-beta.1", "draft": false, "prerelease": true, "published_at": "2026-10-02T12:00:00Z"},
         {"tag_name": "v0.2.5", "draft": false, "prerelease": false, "published_at": "2026-09-28T09:30:00Z"},
         {"tag_name": "v0.2.6", "draft": false, "prerelease": false, "published_at": "2026-10-01T17:34:02Z"},
-        {"tag_name": "v0.2.4", "draft": false, "prerelease": false, "published_at": "2026-09-24T17:34:02Z"},
+        {"tag_name": "v0.0.0", "draft": false, "prerelease": false, "published_at": "2026-09-24T17:34:02Z"},
         {"tag_name": "v0.2.6", "draft": false, "prerelease": false, "published_at": "2026-10-01T17:34:02Z"}
     ]"#;
 
@@ -850,7 +851,7 @@ mod tests {
         }
         assert_eq!(
             manifest_url("v0.2.6"),
-            "https://github.com/jub0t/Concat/releases/download/v0.2.6/manifest.json"
+            "https://github.com/andyresta/jdstudio/releases/download/v0.2.6/manifest.json"
         );
     }
 

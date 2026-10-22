@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag that starts with v (v0.3.0, v0.3.0-alpha.1, ...) builds the
-# app for every platform and architecture, desktops and phones, and
+# app for Windows and Linux, and
 # publishes a GitHub release under that tag with one bundle per target and
 # a checksum file. A tag
 # containing a hyphen is a pre-release. The tag must be the workspace's
@@ -79,7 +79,7 @@ jobs:
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           # The bundles are named for the version, not the tag: v0.2.1 and
-          # v0.2.1-alpha.22 both produce Concat-0.2.1-* files.
+          # v0.2.1-alpha.22 both produce JDStudio-0.2.1-* files.
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   # The engine's tests and lints, on the tagged commit: a tag on a red
@@ -102,19 +102,12 @@ jobs:
       ref: ${{ needs.check.outputs.tag }}
     secrets: inherit
 
-  # `sign` is the one thing that puts the repository's Android key into a
-  # run; a pull request's build of mobile.yml never gets it.
-  phones:
-    needs: [check, engine]
-    uses: ./.github/workflows/mobile.yml
-    with:
-      ref: ${{ needs.check.outputs.tag }}
-      sign: true
-    secrets: inherit
+  # No phones job: JDStudio ships for Windows and Linux, so mobile.yml's
+  # Android and iOS builds are not part of a release.
 
   publish:
     name: Publish release
-    needs: [check, build, phones]
+    needs: [check, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -123,7 +116,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: bundles
-          pattern: Concat-*
+          pattern: JDStudio-*
           merge-multiple: true
 
       # The tree the release is cut from: the notes are read out of its
@@ -170,9 +163,6 @@ jobs:
           # Whether a certificate signed the Windows bundles: build-app.yml
           # leaves them unsigned, and says so, when the secret is unset.
           WINDOWS_SIGNED: ${{ secrets.WINDOWS_CERTIFICATE_PFX != '' }}
-          # No launch check reaches the APK's own code until the emulator
-          # runs a build of it it can execute (see smoke-android.sh).
-          ANDROID_STARTED: "false"
         run: |
           set -euo pipefail
           cd source
@@ -181,7 +171,10 @@ jobs:
             *-*) candidates=() ;;
             *) candidates=(--exclude 'v*-*') ;;
           esac
-          previous=$(git describe --tags --abbrev=0 --match 'v*' "${candidates[@]}" "$tag^" 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -1)
+          # JDStudio's first release has no tag before it: its notes run from
+          # Concat 0.2.8, the commit JDStudio was forked from.
+          fork=9f0cf734eaf3c6bc29bdf7876232e02ae21cd320
+          previous=$(git describe --tags --abbrev=0 --match 'v*' "${candidates[@]}" "$tag^" 2>/dev/null || echo "$fork")
           .github/release-notes.sh "$previous" "$tag" "${tag#v}" > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
 
@@ -189,7 +182,7 @@ jobs:
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.check.outputs.tag }}
-          name: Concat ${{ needs.check.outputs.tag }}
+          name: JDStudio ${{ needs.check.outputs.tag }}
           draft: true
           prerelease: ${{ contains(needs.check.outputs.tag, '-') }}
           body_path: ${{ runner.temp }}/notes.md
