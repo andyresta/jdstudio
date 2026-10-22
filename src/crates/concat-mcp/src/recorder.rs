@@ -148,7 +148,8 @@ fn writable(folder: &Path, roots: &[PathBuf]) -> Result<(), ApiError> {
     }
 }
 
-/// `recorder_devices`: the cameras and microphones there are.
+/// `recorder_devices`: the cameras and microphones there are, and whether
+/// what the computer plays can be recorded.
 pub fn devices() -> Value {
     let cameras: Vec<Value> = concat_media::capture::cameras()
         .into_iter()
@@ -157,6 +158,7 @@ pub fn devices() -> Value {
     json!({
         "cameras": cameras,
         "microphones": concat_host::record::microphones(),
+        "systemAudio": concat_host::record::system_audio_available(),
         "platform": std::env::consts::OS,
     })
 }
@@ -186,6 +188,7 @@ fn finished_view(job: &str, finished: &Finished) -> Value {
         "screen": track(&finished.screen, true),
         "camera": finished.camera.as_ref().map(|camera| track(camera, true)),
         "voice": finished.voice.as_ref().map(|voice| track(voice, false)),
+        "system": finished.system.as_ref().map(|system| track(system, false)),
     })
 }
 
@@ -202,7 +205,15 @@ impl Recorder {
     pub fn start(&self, arguments: &Value, roots: &[PathBuf]) -> Result<Value, ApiError> {
         let fields = fields(
             arguments,
-            &["folder", "path", "area", "fps", "camera", "microphone"],
+            &[
+                "folder",
+                "path",
+                "area",
+                "fps",
+                "camera",
+                "microphone",
+                "systemAudio",
+            ],
         )?;
         let folder = match (text(fields, "folder")?, text(fields, "path")?) {
             (Some(folder), None) => PathBuf::from(folder),
@@ -248,6 +259,17 @@ impl Recorder {
         };
         let camera = text(fields, "camera")?.map(str::to_owned);
         let microphone = text(fields, "microphone")?.map(str::to_owned);
+        let system_audio = match fields.get("systemAudio") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(on)) => *on,
+            Some(_) => return Err(invalid("`systemAudio` is true or false")),
+        };
+        if system_audio && !concat_host::record::system_audio_available() {
+            return Err(ApiError::new(
+                ErrorCode::Refused,
+                "what the computer plays is recorded on Windows only",
+            ));
+        }
 
         let mut jobs = self.jobs();
         if let Some((running, _)) = jobs.iter().find(|(_, job)| matches!(job, Job::Running(_))) {
@@ -263,7 +285,9 @@ impl Recorder {
                 fps,
                 camera: camera.clone(),
                 microphone: microphone.clone(),
+                system_audio,
             },
+            None,
             None,
             None,
         )
@@ -278,6 +302,7 @@ impl Recorder {
             "fps": fps,
             "camera": camera,
             "microphone": microphone,
+            "systemAudio": system_audio,
         }))
     }
 
@@ -346,7 +371,8 @@ impl Recorder {
 
     /// `recorder_land`: a stopped recording's files into an open project -
     /// the screen, the camera over it in the bottom-right corner, the voice
-    /// - from `start` seconds, as the window's recorder lands them.
+    /// and what the computer played - from `start` seconds, as the window's
+    /// recorder lands them.
     pub fn land(&self, arguments: &Value, backend: &mut dyn Backend) -> Result<Value, ApiError> {
         let fields = fields(arguments, &["path", "job", "start", "cameraShape"])?;
         let path = text(fields, "path")?
@@ -426,6 +452,10 @@ impl Recorder {
             Some(voice) => Some(add(backend, voice)?),
             None => None,
         };
+        let system_clip = match &finished.system {
+            Some(system) => Some(add(backend, system)?),
+            None => None,
+        };
         if let (Some(clip_id), Some(camera)) = (&camera_clip, &finished.camera) {
             let view = backend.call(Request::ProjectGet { path: path.clone() })?;
             let size = |key: &str| {
@@ -467,6 +497,7 @@ impl Recorder {
                 "screen": screen_clip,
                 "camera": camera_clip,
                 "voice": voice_clip,
+                "system": system_clip,
             },
             "note": "Each import and placement is its own undoable step; project_save keeps them.",
         }))
@@ -497,6 +528,7 @@ pub fn schema(tool: &str) -> Option<Value> {
                 "fps": { "type": "integer", "minimum": 1, "maximum": 60, "default": 30, "description": "Screen pictures a second, usually 30 or 60." },
                 "camera": { "type": "string", "description": "A camera's `id` from recorder_devices, to record beside the screen." },
                 "microphone": { "type": "string", "description": "A microphone's name from recorder_devices, to record beside the screen." },
+                "systemAudio": { "type": "boolean", "default": false, "description": "Record what the computer plays too, as its own track (Windows only; see recorder_devices' `systemAudio`)." },
             },
         }),
         "recorder_status" | "recorder_stop" => json!({

@@ -70,15 +70,15 @@ Edits stay in memory until `project_save`, as in the window. Times are seconds; 
 
 ### Recording the screen
 
-The recorder tools drive the same recorder as the window's **Record screen**: the screen (or a part of it), and optionally a camera and a microphone, each into a file of its own so they land as separate clips.
+The recorder tools drive the same recorder as the window's **Record screen**: the screen (or a part of it), and optionally a camera, a microphone and what the computer plays, each into a file of its own so they land as separate clips.
 
-1. `recorder_devices` lists the cameras (with the `id` to pass) and microphones (by name, the default first).
-2. `recorder_start` with a `folder` to write into, or a project's `path` (the files go into its `recordings` folder), and optionally `area` (`{x, y, width, height}` in screen pixels), `fps` (1 to 60, 30 when absent), `camera` and `microphone`. It returns a `job` id. One recording runs at a time.
+1. `recorder_devices` lists the cameras (with the `id` to pass) and microphones (by name, the default first), and says in `systemAudio` whether what the computer plays can be recorded (Windows only).
+2. `recorder_start` with a `folder` to write into, or a project's `path` (the files go into its `recordings` folder), and optionally `area` (`{x, y, width, height}` in screen pixels), `fps` (1 to 60, 30 when absent), `camera`, `microphone` and `systemAudio` (true to record what the computer plays). It returns a `job` id. One recording runs at a time.
 3. `recorder_status` says how long it has run; `recorder_pause` holds it (`paused: true`) and carries it on (`paused: false`), cutting the pause out of every file.
-4. `recorder_stop` finishes the files and returns them: `screen`, `camera` and `voice`, each with its `file`, its `start` (seconds after the earliest source began, so the three line up), its length in `seconds` and its picture size.
-5. `recorder_land` puts them into an open project as the window does: the screen on a lane from `start`, the camera over it scaled into the bottom-right corner (`cameraShape`: `rectangle`, `rounded` or `circle`), and the voice under both. Then `project_save`.
+4. `recorder_stop` finishes the files and returns them: `screen`, `camera`, `voice` and `system`, each with its `file`, its `start` (seconds after the earliest source began, so they line up), its length in `seconds` and its picture size.
+5. `recorder_land` puts them into an open project as the window does: the screen on a lane from `start`, the camera over it scaled into the bottom-right corner (`cameraShape`: `rectangle`, `rounded` or `circle`), and the voice and the system sound under both. Then `project_save`.
 
-The recording runs in the MCP server's own process, on the machine it runs on, in either mode, so it records that machine's screen and devices; a recording still running when the client disconnects is stopped and its files finished. The recorder is tested on Windows (GDI screen capture, DirectShow cameras); macOS (AVFoundation) and Linux (X11, V4L2) build the same code but are untested, and macOS asks for Screen Recording, Camera and Microphone permission for whatever app started the server.
+The recording runs in the MCP server's own process, on the machine it runs on, in either mode, so it records that machine's screen and devices; a recording still running when the client disconnects is stopped and its files finished. Every file is good on disk as it goes (fragmented MP4, WAV headers kept current), so a recording cut short by a crash still plays up to its last two seconds. The recorder is tested on Windows (Desktop Duplication screen capture with GDI as the fallback, DirectShow cameras, WASAPI loopback for the system sound); macOS (AVFoundation) and Linux (X11, V4L2) build the same code but are untested, and macOS asks for Screen Recording, Camera and Microphone permission for whatever app started the server.
 
 ## Protocol
 
