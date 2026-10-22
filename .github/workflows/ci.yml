@@ -225,9 +225,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
-            sherpa: osx-arm64
-            verb: Compiles
           - os: windows-2022
             sherpa: win-x64
             verb: Tests
