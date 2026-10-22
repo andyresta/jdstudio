@@ -1823,6 +1823,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         app.on_recorder_microphone_changed(on_window!(|state, index: i32| {
             state.handle(Msg::Recorder(RecorderMsg::Microphone(index)));
         }));
+        app.on_recorder_system_audio_changed(on_window!(|state, on: bool| {
+            state.handle(Msg::Recorder(RecorderMsg::SystemAudio(on)));
+        }));
         app.on_recorder_camera_changed(on_window!(|state, index: i32| {
             state.handle(Msg::Recorder(RecorderMsg::Camera(index)));
         }));

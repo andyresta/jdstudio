@@ -30,6 +30,8 @@ pub struct Preferences {
     pub last_project_location: Option<String>,
     /// The screen recorder's microphone, by name; `None` records none.
     pub recorder_microphone: Option<String>,
+    /// The screen recorder records what the computer plays too.
+    pub recorder_system_audio: bool,
     /// The screen recorder's camera, by the name it is shown under; `None`
     /// records none.
     pub recorder_camera: Option<String>,

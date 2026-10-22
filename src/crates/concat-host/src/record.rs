@@ -18,6 +18,26 @@
 //! The file is good on disk as it goes: its header is brought up to date
 //! about once a second, so a take cut short by a crash or a pulled plug is
 //! a WAV that plays up to the last second, not a file nothing opens.
+//!
+//! The same machinery records what the computer plays -
+//! [`Microphone::open_system`] - through WASAPI loopback on Windows.
+//! Loopback hands over nothing at all while nothing plays, so a silent
+//! stream is played into the same device for as long as it is open: the
+//! device then always runs, and silence is recorded as silence rather than
+//! left out.
+//!
+//! A take is kept in step with the clock the pictures are timed by. The
+//! sound card's clock is not the computer's: tens of parts per million
+//! apart is usual, a frame's worth over a twenty-minute recording. Each
+//! buffer is stamped with when it was heard. A stamp can come late - the
+//! computer busy when the buffer is handed over - but never early, so how
+//! far the take is ahead of the clock is read from the earliest-stamped
+//! buffer of the last [`WINDOW`]. When that runs more than [`DRIFT_LIMIT`]
+//! ahead or behind, a sample a buffer is dropped or repeated until they
+//! agree again, far too little to hear. A take a whole window a [`GAP`]
+//! behind lost buffers, and the gap is filled with silence; one a [`GAP`]
+//! ahead even by its earliest stamp has too much - a gap filled for
+//! buffers that were only late - and is trimmed back at once.
 
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
@@ -29,6 +49,37 @@ use std::time::{Duration, Instant};
 /// A sample at or past this is a sample the converter could not hold: the
 /// meter's clip light.
 const CLIP: f32 = 0.999;
+
+/// Seconds a take may run ahead of or behind the clock before it is
+/// pulled back into step: under a frame at 60 fps.
+const DRIFT_LIMIT: f64 = 0.012;
+
+/// Seconds it is pulled back to before the pulling stops.
+const DRIFT_SETTLED: f64 = 0.003;
+
+/// Seconds behind the clock that are a gap - buffers the device lost -
+/// rather than drift, filled with silence at once.
+const GAP: f64 = 0.1;
+
+/// The stretch of buffers the take's place against the clock is read
+/// over: long enough that one of them was handed over on time however
+/// busy the computer, short enough to follow a real gap within a second.
+const WINDOW: Duration = Duration::from_secs(1);
+
+/// Whether this system can record what it plays: WASAPI loopback, Windows
+/// only. Elsewhere the recorder hides the choice.
+pub const fn system_audio_available() -> bool {
+    cfg!(target_os = "windows")
+}
+
+/// Where a [`Microphone`] listens.
+#[derive(Clone, Debug)]
+enum Input {
+    /// A microphone, by name, or the default one.
+    Microphone(Option<String>),
+    /// What the default output device plays.
+    System,
+}
 
 /// The microphones the system offers, by the names it gives them, the
 /// default first when it says which that is. Empty when there are none or
@@ -52,8 +103,9 @@ pub fn microphones() -> Vec<String> {
     names
 }
 
-/// The microphone, open. Dropping it closes the device, finishing any take
-/// still being written so what was heard is kept.
+/// The microphone, open - or the system's own sound, see
+/// [`Microphone::open_system`]. Dropping it closes the device, finishing
+/// any take still being written so what was heard is kept.
 pub struct Microphone {
     shared: Arc<Shared>,
     events: mpsc::Sender<Event>,
@@ -74,6 +126,9 @@ pub struct Take {
     /// device says: the callback's time less the latency it reports. None
     /// when no sound arrived at all.
     pub first: Option<Instant>,
+    /// Samples added (more than zero) or dropped (less) to keep the take in
+    /// step with the clock: how far the device's clock drifted.
+    pub corrected: i64,
 }
 
 /// What the meter shows: the loudest sample and the average power since it
@@ -106,6 +161,13 @@ struct Shared {
     heard: AtomicBool,
     /// What went wrong with the device after it opened: unplugged, taken.
     failed: Mutex<Option<String>>,
+    /// Where the take ends, by when the sound was heard: set by
+    /// [`Microphone::cut_at`]. Sound heard after it is not kept.
+    until: Mutex<Option<Instant>>,
+    /// A buffer heard past `until` has arrived: everything before it is in.
+    past: AtomicBool,
+    /// Samples a second, to cut a buffer at `until`.
+    rate: AtomicU32,
 }
 
 impl Shared {
@@ -118,6 +180,9 @@ impl Shared {
             written: AtomicU64::new(0),
             heard: AtomicBool::new(false),
             failed: Mutex::new(None),
+            until: Mutex::new(None),
+            past: AtomicBool::new(false),
+            rate: AtomicU32::new(0),
         }
     }
 
@@ -137,19 +202,36 @@ impl Shared {
         if !self.writing.load(Ordering::Relaxed) {
             return None;
         }
+        // Cut where the take ends: what was heard before it is kept,
+        // however late the system hands it over.
+        let mut kept = mono;
+        if let (Some(until), Some(heard)) = (*lock(&self.until), heard) {
+            if heard >= until {
+                self.past.store(true, Ordering::Relaxed);
+                return None;
+            }
+            let rate = f64::from(self.rate.load(Ordering::Relaxed));
+            let before = (until.duration_since(heard).as_secs_f64() * rate) as usize;
+            if before < mono.len() {
+                kept = &mono[..before];
+                self.past.store(true, Ordering::Relaxed);
+            }
+        }
         if let Ok(mut first) = self.first.try_lock()
             && first.is_none()
         {
             *first = heard;
         }
-        Some(to_pcm(mono))
+        Some(to_pcm(kept))
     }
 }
 
 /// What the writer thread is told.
 enum Event {
-    /// Samples for the take.
-    Samples(Vec<i16>),
+    /// Samples for the take, and when the first of them was heard.
+    Samples(Vec<i16>, Option<Instant>),
+    /// The take carries on after a pause: what was held is not a gap.
+    Resumed,
     /// Start a take in this file.
     Begin(PathBuf, mpsc::Sender<Result<(), String>>),
     /// Finish the take.
@@ -164,16 +246,29 @@ impl Microphone {
     /// the device is open and running, or with why it would not open: no
     /// microphone, or one the system will not hand over.
     pub fn open(name: Option<&str>) -> Result<Microphone, String> {
+        Self::start(Input::Microphone(name.map(str::to_owned)))
+    }
+
+    /// Opens what the computer plays - the default output device, through
+    /// WASAPI loopback - as if it were a microphone. Windows only; see
+    /// [`system_audio_available`].
+    pub fn open_system() -> Result<Microphone, String> {
+        if !system_audio_available() {
+            return Err("system sound is recorded on Windows only".to_owned());
+        }
+        Self::start(Input::System)
+    }
+
+    fn start(input: Input) -> Result<Microphone, String> {
         let shared = Arc::new(Shared::new());
         let (events, inbox) = mpsc::channel::<Event>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(String, u32), String>>();
-        let wanted = name.map(str::to_owned);
         let thread = {
             let shared = Arc::clone(&shared);
             let events = events.clone();
             std::thread::Builder::new()
                 .name("audio-input".into())
-                .spawn(move || run(wanted.as_deref(), &shared, events, &inbox, &ready_tx))
+                .spawn(move || run(&input, &shared, events, &inbox, &ready_tx))
                 .map_err(|error| format!("could not spawn the recording thread: {error}"))?
         };
         match ready_rx.recv() {
@@ -209,6 +304,8 @@ impl Microphone {
         }
         self.shared.writing.store(false, Ordering::Relaxed);
         *lock(&self.shared.first) = None;
+        *lock(&self.shared.until) = None;
+        self.shared.past.store(false, Ordering::Relaxed);
         self.shared.written.store(0, Ordering::Relaxed);
         let (reply, answer) = mpsc::channel();
         self.events
@@ -228,11 +325,30 @@ impl Microphone {
 
     /// Carries the take on from where it was held.
     pub fn resume(&self) {
+        let _ = self.events.send(Event::Resumed);
         self.shared.writing.store(true, Ordering::Relaxed);
+    }
+
+    /// Ends the take at `at`, by when the sound was heard rather than
+    /// when it is handed over: several sources cut at one moment end
+    /// together. Nothing heard after it is kept; [`Microphone::end`] then
+    /// finishes the file once what came before has arrived.
+    pub fn cut_at(&self, at: Instant) {
+        *lock(&self.shared.until) = Some(at);
     }
 
     /// Finishes the take and its file.
     pub fn end(&self) -> Result<Take, String> {
+        // Cut short at a moment: what was heard before it may still be on
+        // its way, on a busy computer. Half a second for it at most.
+        if lock(&self.shared.until).is_some() {
+            let waited = Instant::now();
+            while !self.shared.past.load(Ordering::Relaxed)
+                && waited.elapsed() < Duration::from_millis(500)
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
         self.shared.writing.store(false, Ordering::Relaxed);
         let (reply, answer) = mpsc::channel();
         self.events
@@ -290,7 +406,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// The recording thread: opens the device, says so, and writes takes until
 /// told to close; a take still open then is finished, not lost.
 fn run(
-    name: Option<&str>,
+    source: &Input,
     shared: &Arc<Shared>,
     events: mpsc::Sender<Event>,
     inbox: &mpsc::Receiver<Event>,
@@ -300,20 +416,37 @@ fn run(
 
     let opened = (|| -> Result<_, String> {
         let host = cpal::default_host();
-        let named = name.and_then(|name| {
-            host.input_devices()
-                .ok()?
-                .find(|device| device.name().is_ok_and(|found| found == name))
-        });
-        let device = match named {
-            Some(device) => device,
-            None => host
-                .default_input_device()
-                .ok_or_else(|| "no microphone was found".to_owned())?,
+        let (device, supported, keep_awake) = match source {
+            Input::Microphone(name) => {
+                let named = name.as_deref().and_then(|name| {
+                    host.input_devices()
+                        .ok()?
+                        .find(|device| device.name().is_ok_and(|found| found == name))
+                });
+                let device = match named {
+                    Some(device) => device,
+                    None => host
+                        .default_input_device()
+                        .ok_or_else(|| "no microphone was found".to_owned())?,
+                };
+                let supported = device.default_input_config().map_err(|error| {
+                    format!("the microphone would not say how it records: {error}")
+                })?;
+                (device, supported, None)
+            }
+            Input::System => {
+                let device = host
+                    .default_output_device()
+                    .ok_or_else(|| "no speakers or headphones were found".to_owned())?;
+                let supported = device.default_output_config().map_err(|error| {
+                    format!("the speakers would not say how they play: {error}")
+                })?;
+                // Silence played into the device keeps loopback handing
+                // over buffers while nothing else plays.
+                let keep_awake = silence(&device, &supported)?;
+                (device, supported, Some(keep_awake))
+            }
         };
-        let supported = device
-            .default_input_config()
-            .map_err(|error| format!("the microphone would not say how it records: {error}"))?;
         let config: cpal::StreamConfig = supported.config();
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => input::<f32>(&device, &config, events, shared),
@@ -328,7 +461,8 @@ fn run(
             .play()
             .map_err(|error| format!("the microphone would not start: {error}"))?;
         let name = device.name().unwrap_or_default();
-        Ok((stream, config.sample_rate.0, name))
+        shared.rate.store(config.sample_rate.0, Ordering::Relaxed);
+        Ok(((stream, keep_awake), config.sample_rate.0, name))
     })();
 
     let (stream, rate) = match opened {
@@ -355,7 +489,7 @@ fn run(
     shared.writing.store(false, Ordering::Relaxed);
     drop(stream);
     while let Ok(event) = inbox.try_recv() {
-        if let Event::Samples(_) = event {
+        if let Event::Samples(..) = event {
             takes.handle(event);
         }
     }
@@ -377,6 +511,20 @@ struct Takes {
     open: Option<(PathBuf, WavWriter)>,
     /// Why the open take's file stopped being written, if it did.
     broken: Option<String>,
+    /// The take's clock: when a buffer was heard and how many samples had
+    /// been written before it. Set by the first buffer, and again by the
+    /// first after a pause.
+    anchor: Option<(Instant, u64)>,
+    /// Samples are being dropped or repeated to bring the take into step.
+    pulling: bool,
+    /// The last [`WINDOW`] of buffers: when each was heard and how far
+    /// ahead of the clock the take was at it, in seconds.
+    recent: std::collections::VecDeque<(Instant, f64)>,
+    /// Samples added or dropped so far in the open take.
+    corrected: i64,
+    /// Samples still to be dropped (less than zero) from the buffers to
+    /// come: a trim longer than the buffer it was decided on.
+    owed: i64,
 }
 
 impl Takes {
@@ -386,17 +534,67 @@ impl Takes {
             shared,
             open: None,
             broken: None,
+            anchor: None,
+            pulling: false,
+            recent: std::collections::VecDeque::new(),
+            corrected: 0,
+            owed: 0,
         }
     }
 
     fn handle(&mut self, event: Event) {
         match event {
-            Event::Samples(samples) => {
+            Event::Samples(mut samples, heard) => {
                 let Some((_, writer)) = self.open.as_mut() else {
                     return;
                 };
                 if self.broken.is_some() {
                     return;
+                }
+                if let Some(heard) = heard {
+                    // A trim still owed counts as made.
+                    let written = writer.samples.saturating_add_signed(self.owed);
+                    match self.anchor {
+                        None => {
+                            self.anchor = Some((heard, written));
+                            self.recent.push_back((heard, 0.0));
+                        }
+                        Some((at, from)) => {
+                            let passed = if heard >= at {
+                                heard.duration_since(at).as_secs_f64()
+                            } else {
+                                -at.duration_since(heard).as_secs_f64()
+                            };
+                            let ahead =
+                                (written - from) as f64 / f64::from(self.rate.max(1)) - passed;
+                            // The least late stamp of the window is the
+                            // truest; a whole window of late ones is a gap.
+                            self.recent.push_back((heard, ahead));
+                            while self.recent.front().is_some_and(|(at, _)| {
+                                heard.saturating_duration_since(*at) > WINDOW
+                            }) {
+                                self.recent.pop_front();
+                            }
+                            let truest = self
+                                .recent
+                                .iter()
+                                .map(|(_, ahead)| *ahead)
+                                .fold(f64::MIN, f64::max);
+                            let change = pull(truest, self.rate, &mut self.pulling);
+                            if change != 0 {
+                                // What the window measured is corrected
+                                // now, by as much.
+                                let moved = change as f64 / f64::from(self.rate.max(1));
+                                for (_, ahead) in &mut self.recent {
+                                    *ahead += moved;
+                                }
+                            }
+                            let wanted = self.owed + change;
+                            let made = adjust(&mut samples, wanted);
+                            self.owed = wanted - made;
+                            self.corrected += made;
+                        }
+                    }
                 }
                 match writer.write(&samples) {
                     Ok(()) => {
@@ -415,6 +613,11 @@ impl Takes {
                 let result = WavWriter::create(&path, self.rate).map(|writer| {
                     self.open = Some((path, writer));
                     self.broken = None;
+                    self.anchor = None;
+                    self.pulling = false;
+                    self.recent.clear();
+                    self.corrected = 0;
+                    self.owed = 0;
                 });
                 let _ = reply.send(result);
             }
@@ -423,6 +626,10 @@ impl Takes {
                     .finish()
                     .unwrap_or_else(|| Err("no take was being recorded".to_owned()));
                 let _ = reply.send(result);
+            }
+            Event::Resumed => {
+                self.anchor = None;
+                self.recent.clear();
             }
             Event::Close => {}
         }
@@ -439,6 +646,15 @@ impl Takes {
             Ok(seconds) => seconds,
             Err(error) => return Some(Err(error)),
         };
+        if self.corrected != 0 {
+            log::info!(
+                "recording: kept {} in step with the clock by {:+} samples over {seconds:.1}s \
+                 ({:+.0} ppm)",
+                path.display(),
+                self.corrected,
+                self.corrected as f64 / (seconds * f64::from(self.rate.max(1))).max(1.0) * 1e6
+            );
+        }
         let first = *lock(&self.shared.first);
         if first.is_none() {
             let why = lock(&self.shared.failed).clone();
@@ -450,6 +666,7 @@ impl Takes {
             path,
             seconds,
             first,
+            corrected: self.corrected,
         }))
     }
 }
@@ -485,7 +702,7 @@ where
                 let gain = f32::from_bits(shared.gain.load(Ordering::Relaxed));
                 let mono = mix_down(data.iter().map(|s| s.to_sample::<f32>()), channels, gain);
                 if let Some(samples) = shared.capture(&mono, heard) {
-                    let _ = events.send(Event::Samples(samples));
+                    let _ = events.send(Event::Samples(samples, heard));
                 }
             },
             move |error| {
@@ -496,6 +713,91 @@ where
             None,
         )
         .map_err(|error| format!("the microphone would not open: {error}"))
+}
+
+/// How many samples to add to (more than zero) or drop from (less) the
+/// next buffer, for a take `ahead` seconds ahead of the clock (behind when
+/// less than zero). Past [`DRIFT_LIMIT`] it starts pulling, a sample a
+/// buffer, and keeps on until within [`DRIFT_SETTLED`]; a [`GAP`] behind
+/// is filled, and a [`GAP`] ahead trimmed, at once.
+fn pull(ahead: f64, rate: u32, pulling: &mut bool) -> i64 {
+    if ahead.abs() > GAP {
+        *pulling = false;
+        return (-ahead * f64::from(rate)).round() as i64;
+    }
+    if ahead.abs() > DRIFT_LIMIT {
+        *pulling = true;
+    } else if ahead.abs() < DRIFT_SETTLED {
+        *pulling = false;
+    }
+    match (*pulling, ahead > 0.0) {
+        (false, _) => 0,
+        (true, true) => -1,
+        (true, false) => 1,
+    }
+}
+
+/// `samples` with `change` samples dropped from its end (less than zero),
+/// or silence (a gap) or its last sample repeated (drift) added. Returns
+/// the change made: no more can be dropped than the buffer holds.
+fn adjust(samples: &mut Vec<i16>, change: i64) -> i64 {
+    match change {
+        0 => 0,
+        1 => {
+            let last = samples.last().copied().unwrap_or(0);
+            samples.push(last);
+            1
+        }
+        more if more > 1 => {
+            let gap = usize::try_from(more).unwrap_or(0);
+            samples.splice(0..0, std::iter::repeat_n(0, gap));
+            more
+        }
+        fewer => {
+            let dropped = samples
+                .len()
+                .min(usize::try_from(fewer.unsigned_abs()).unwrap_or(usize::MAX));
+            samples.truncate(samples.len() - dropped);
+            -(dropped as i64)
+        }
+    }
+}
+
+/// A stream playing silence into `device`, so its loopback keeps running.
+fn silence(
+    device: &cpal::Device,
+    supported: &cpal::SupportedStreamConfig,
+) -> Result<cpal::Stream, String> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
+
+    fn quiet<T: cpal::SizedSample>(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+    ) -> Result<cpal::Stream, cpal::BuildStreamError> {
+        device.build_output_stream(
+            config,
+            |data: &mut [T], _: &cpal::OutputCallbackInfo| data.fill(T::EQUILIBRIUM),
+            |error| log::warn!("system sound: the silent stream failed: {error}"),
+            None,
+        )
+    }
+    let config = supported.config();
+    let stream = match supported.sample_format() {
+        cpal::SampleFormat::F32 => quiet::<f32>(device, &config),
+        cpal::SampleFormat::I16 => quiet::<i16>(device, &config),
+        cpal::SampleFormat::U16 => quiet::<u16>(device, &config),
+        cpal::SampleFormat::I32 => quiet::<i32>(device, &config),
+        other => {
+            return Err(format!(
+                "the speakers play {other:?} samples, which Concat does not read"
+            ));
+        }
+    }
+    .map_err(|error| format!("the speakers would not open: {error}"))?;
+    stream
+        .play()
+        .map_err(|error| format!("the speakers would not start: {error}"))?;
+    Ok(stream)
 }
 
 /// Interleaved samples of `channels` channels as mono - the mean of each
@@ -783,7 +1085,7 @@ mod tests {
         shared.writing.store(true, Ordering::Relaxed);
         let start = Instant::now();
         let spoken = shared.capture(&[0.5, 0.5], Some(start)).expect("kept");
-        takes.handle(Event::Samples(spoken));
+        takes.handle(Event::Samples(spoken, None));
         // Paused: heard, measured, not kept.
         shared.writing.store(false, Ordering::Relaxed);
         assert_eq!(shared.capture(&[0.25, 0.25, 0.25], None), None);
@@ -792,7 +1094,7 @@ mod tests {
         shared.writing.store(true, Ordering::Relaxed);
         let later = start + Duration::from_secs(5);
         let more = shared.capture(&[-0.5], Some(later)).expect("kept");
-        takes.handle(Event::Samples(more));
+        takes.handle(Event::Samples(more, None));
         assert_eq!(shared.written.load(Ordering::Relaxed), 3);
 
         let (reply, answer) = mpsc::channel();
@@ -829,6 +1131,155 @@ mod tests {
         let (reply, answer) = mpsc::channel();
         takes.handle(Event::End(reply));
         assert!(answer.recv().expect("answered").is_err(), "nothing open");
+    }
+
+    #[test]
+    fn a_take_whose_clock_runs_fast_is_kept_in_step() {
+        // A device at 1000 Hz by its own clock that is 1000.5 Hz by the
+        // computer's - 500 ppm, far worse than any real one - for an hour.
+        let shared = Arc::new(Shared::new());
+        let mut takes = Takes::new(1000, Arc::clone(&shared));
+        let path = temp("drift");
+        let (reply, answer) = mpsc::channel();
+        takes.handle(Event::Begin(path.clone(), reply));
+        answer.recv().expect("answered").expect("begins");
+        *lock(&shared.first) = Some(Instant::now());
+        let start = Instant::now();
+        let buffer = 10;
+        let mut worst = 0.0f64;
+        for index in 0..360_000u64 {
+            let heard = start + Duration::from_secs_f64((index * buffer) as f64 / 1000.5);
+            takes.handle(Event::Samples(vec![1; buffer as usize], Some(heard)));
+            let written = takes.open.as_ref().expect("open").1.samples as f64 / 1000.0;
+            let passed = heard.duration_since(start).as_secs_f64() + buffer as f64 / 1000.5;
+            if index > 0 {
+                worst = worst.max((written - passed).abs());
+            }
+        }
+        let (reply, answer) = mpsc::channel();
+        takes.handle(Event::End(reply));
+        let take = answer.recv().expect("answered").expect("a take");
+        let _ = std::fs::remove_file(&path);
+        // Within the limit and a buffer the whole hour long.
+        assert!(worst < DRIFT_LIMIT + 0.011, "{worst}s out of step");
+        // 0.5 samples a second for an hour, dropped.
+        assert!((take.corrected + 1800).abs() < 20, "{}", take.corrected);
+    }
+
+    /// Writes 10-sample buffers at 100 Hz, stamped as given, and reads the
+    /// take back.
+    fn take_of(buffers: &[(f64, i16)], resume_before: Option<usize>) -> (Vec<i16>, Take) {
+        let shared = Arc::new(Shared::new());
+        let mut takes = Takes::new(100, Arc::clone(&shared));
+        let path = temp(&format!("gap-{}", buffers.len()));
+        let (reply, answer) = mpsc::channel();
+        takes.handle(Event::Begin(path.clone(), reply));
+        answer.recv().expect("answered").expect("begins");
+        *lock(&shared.first) = Some(Instant::now());
+        let start = Instant::now();
+        for (index, (at, value)) in buffers.iter().enumerate() {
+            if resume_before == Some(index) {
+                takes.handle(Event::Resumed);
+            }
+            let heard = Some(start + Duration::from_secs_f64(*at));
+            takes.handle(Event::Samples(vec![*value; 10], heard));
+        }
+        let (reply, answer) = mpsc::channel();
+        takes.handle(Event::End(reply));
+        let take = answer.recv().expect("answered").expect("a take");
+        let bytes = std::fs::read(&path).expect("reads");
+        let _ = std::fs::remove_file(&path);
+        let samples = bytes[44..]
+            .chunks(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        (samples, take)
+    }
+
+    #[test]
+    fn a_gap_that_holds_is_filled_with_silence() {
+        // Half a second lost after the first buffer. The buffers after it
+        // keep coming half a second behind, and once the window holds
+        // nothing but them the gap is filled, before the next.
+        let buffers: Vec<(f64, i16)> = std::iter::once((0.0, 1))
+            .chain((0..7).map(|n| (0.6 + f64::from(n) * 0.1, 2 + n as i16)))
+            .collect();
+        let (samples, take) = take_of(&buffers, None);
+        assert_eq!(take.corrected, 50);
+        assert_eq!(samples.len(), 130);
+        // The buffers heard up to a second after the last on time, then
+        // the silence, then the rest.
+        assert_eq!(&samples[50..60], &[6; 10]);
+        assert_eq!(&samples[60..110], &[0; 50]);
+        assert_eq!(&samples[110..120], &[7; 10]);
+    }
+
+    #[test]
+    fn a_take_cut_at_a_moment_keeps_what_was_heard_before_it() {
+        let shared = Shared::new();
+        shared.rate.store(100, Ordering::Relaxed);
+        shared.writing.store(true, Ordering::Relaxed);
+        let start = Instant::now();
+        *lock(&shared.until) = Some(start + Duration::from_millis(150));
+        // Heard before the cut, handed over whenever: kept whole.
+        assert_eq!(
+            shared
+                .capture(&[0.5; 10], Some(start))
+                .map(|kept| kept.len()),
+            Some(10)
+        );
+        assert!(!shared.past.load(Ordering::Relaxed));
+        // Across it: cut where it falls.
+        let across = start + Duration::from_millis(100);
+        assert_eq!(
+            shared
+                .capture(&[0.5; 10], Some(across))
+                .map(|kept| kept.len()),
+            Some(5)
+        );
+        assert!(shared.past.load(Ordering::Relaxed));
+        // After it: nothing.
+        let after = start + Duration::from_millis(200);
+        assert_eq!(shared.capture(&[0.5; 10], Some(after)), None);
+    }
+
+    #[test]
+    fn a_gap_filled_for_late_buffers_is_trimmed_back() {
+        // A second and a half with nothing handed over - the computer
+        // swamped - and then all of it at once: the gap filled on the way
+        // is taken out again once the late buffers arrive, over as many
+        // buffers as it takes, and the take ends in step.
+        let mut buffers: Vec<(f64, i16)> = vec![(0.0, 1)];
+        // Nothing heard on time from 0.1 s to 1.6 s; stamped late, all at
+        // 1.6 s.
+        buffers.extend((0..15).map(|_| (1.6, 2)));
+        buffers.extend((0..10).map(|n| (1.6 + f64::from(n) * 0.1, 3)));
+        let (samples, take) = take_of(&buffers, None);
+        // 26 buffers of a tenth of a second: 2.6 s, in step at the end.
+        let seconds = samples.len() as f64 / 100.0;
+        assert!((seconds - 2.6).abs() <= 0.02, "{seconds}s");
+        assert!(take.corrected.abs() <= 2, "{}", take.corrected);
+    }
+
+    #[test]
+    fn a_late_buffer_and_a_pause_are_not_gaps() {
+        // The second buffer comes a fifth of a second late - the computer
+        // busy - and the ones held up behind it straight after: nothing is
+        // filled. Then a pause of a minute, cut out, not filled.
+        let (samples, take) = take_of(
+            &[
+                (0.0, 1),
+                (0.3, 2),
+                (0.3, 3),
+                (0.3, 4),
+                (0.4, 5),
+                (60.0, 6),
+                (60.1, 7),
+            ],
+            Some(5),
+        );
+        assert_eq!(samples.len(), 70);
+        assert!(take.corrected.abs() <= 2, "{}", take.corrected);
     }
 
     #[test]

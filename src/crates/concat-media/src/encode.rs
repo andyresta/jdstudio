@@ -512,6 +512,7 @@ fn opens(codec: VideoCodec, encoder_name: &'static str) -> bool {
         tags,
         None,
         true,
+        false,
     );
     if let Err(error) = &result {
         log::info!("{encoder_name} does not open here: {error}");
@@ -606,6 +607,7 @@ fn open_video(
     ),
     hdr: Option<Signal>,
     global_header: bool,
+    live: bool,
 ) -> Result<(encoder::video::Encoder, Pixel)> {
     let pq = hdr == Some(Signal::Pq);
     let family = Family::of(encoder_name);
@@ -640,6 +642,15 @@ fn open_video(
     }
     if global_header {
         video.set_flags(ffmpeg::codec::Flags::GLOBAL_HEADER);
+    }
+    if live {
+        // A keyframe, and so a fragment on disk, every two seconds; and no
+        // B-frames, so each picture is stored in the order it was taken
+        // and the last one written - however long after the one before -
+        // is the last in the file, which ends where it says.
+        let fps = (f64::from(rate.numerator()) / f64::from(rate.denominator().max(1))).round();
+        video.set_gop((fps.max(1.0) * 2.0) as u32);
+        video.set_max_b_frames(0);
     }
     if pq {
         // The display it was mastered on, where an encoder that writes
@@ -1049,6 +1060,37 @@ impl Encoder {
         )
     }
 
+    /// [`Encoder::create`] for a file written live, from a device: a
+    /// fragmented MP4 whose index is up front and empty, and whose frames
+    /// follow in self-contained fragments, one per keyframe (every two
+    /// seconds). A plain MP4 is unplayable until its trailer is written,
+    /// so a recording cut short by a crash or a pulled plug would be lost
+    /// whole; this one plays up to its last finished fragment. Each
+    /// fragment is handed to the system as soon as it is written.
+    pub fn create_live(
+        path: impl AsRef<Path>,
+        width: u32,
+        height: u32,
+        frame_rate: FrameRate,
+        options: &EncodeOptions,
+    ) -> Result<Self> {
+        use ffmpeg::color::{Primaries, Space, TransferCharacteristic};
+        Self::open(
+            path,
+            width,
+            height,
+            frame_rate,
+            options,
+            (
+                Primaries::BT709,
+                TransferCharacteristic::BT709,
+                Space::BT709,
+            ),
+            None,
+            true,
+        )
+    }
+
     /// [`Encoder::create`] tagged as HDR - BT.2020, 10-bit, HLG or PQ -
     /// over frames that are sRGB pictures. The tag is a lie, and the name
     /// says so: it exists for the perf harness, which times the decoder's
@@ -1100,7 +1142,7 @@ impl Encoder {
             ffmpeg::color::Space,
         ),
     ) -> Result<Self> {
-        Self::open(path, width, height, frame_rate, options, tags, None)
+        Self::open(path, width, height, frame_rate, options, tags, None, false)
     }
 
     /// Opens `path` for an HDR file: BT.2020, ten bits, HLG or PQ as
@@ -1150,12 +1192,15 @@ impl Encoder {
             &options,
             (Primaries::BT2020, transfer, Space::BT2020NCL),
             Some(signal),
+            false,
         )
     }
 
     /// The one way in: `tags` on the file, and `hdr` the signal of deep
     /// frames when the file is HDR (see [`Encoder::create_hdr`]), else the
-    /// frames are eight-bit sRGB.
+    /// frames are eight-bit sRGB; `live` writes a fragmented MP4 (see
+    /// [`Encoder::create_live`]) rather than one indexed at the end.
+    #[allow(clippy::too_many_arguments)]
     fn open(
         path: impl AsRef<Path>,
         width: u32,
@@ -1168,6 +1213,7 @@ impl Encoder {
             ffmpeg::color::Space,
         ),
         hdr: Option<Signal>,
+        live: bool,
     ) -> Result<Self> {
         ffi::init();
         let pq = hdr == Some(Signal::Pq);
@@ -1215,6 +1261,7 @@ impl Encoder {
                 tags,
                 hdr,
                 global_header,
+                live,
             ) {
                 Ok((encoder, pixel_format)) => {
                     // Opening proves the chip, for the export sheet's label.
@@ -1275,8 +1322,18 @@ impl Encoder {
                 }
             }
         }
+        let header = if live {
+            ffmpeg::dict! {
+                "movflags" => "+frag_keyframe+empty_moov+default_base_moof",
+                // Each fragment out to the system as soon as it is made,
+                // not left in FFmpeg's buffer for the next.
+                "flush_packets" => "1",
+            }
+        } else {
+            ffmpeg::dict! { "movflags" => "+faststart" }
+        };
         output
-            .write_header_with(ffmpeg::dict! { "movflags" => "+faststart" })
+            .write_header_with(header)
             .map_err(|error| ffi::fail("write header", path, error))?;
         let stream_time_base = output
             .stream(0)
@@ -1341,7 +1398,8 @@ impl Encoder {
         self.encoder_name
     }
 
-    /// How many frames have been accepted so far.
+    /// How many frame slots have been filled so far: frames accepted, and
+    /// the slots [`Encoder::write_frame_at`] held over.
     pub const fn written(&self) -> u64 {
         self.written
     }
@@ -1516,8 +1574,20 @@ fn until_ended<S>(
     }
 }
 
-impl FrameSink for Encoder {
-    fn write_frame(&mut self, frame: &Frame) -> Result<()> {
+impl Encoder {
+    /// Writes `frame` at frame `slot` of the file rather than the next
+    /// one: the slots between the last frame and this one hold the last
+    /// frame, without its being encoded again. A live recording that falls
+    /// behind the clock keeps its length this way, rather than spending
+    /// the time it does not have on copies. A slot already written is
+    /// refused.
+    pub fn write_frame_at(&mut self, frame: &Frame, slot: u64) -> Result<()> {
+        if slot < self.written {
+            return Err(Error::Io {
+                path: self.path.clone(),
+                source: std::io::Error::other("a frame slot was written twice"),
+            });
+        }
         if frame.width() != self.width || frame.height() != self.height {
             return Err(Error::FrameSizeMismatch {
                 want_width: self.width,
@@ -1565,7 +1635,7 @@ impl FrameSink for Encoder {
         self.scaler
             .run(&rgba, &mut converted)
             .map_err(|error| ffi::fail("convert", &self.path, error))?;
-        converted.set_pts(Some(self.written as i64));
+        converted.set_pts(Some(slot as i64));
         // The frame says what its numbers span, the same as the stream
         // does: a hardware encoder reads it off the frame.
         // SAFETY: `converted` is a live frame the scaler just filled; the
@@ -1575,8 +1645,14 @@ impl FrameSink for Encoder {
         }
 
         self.send(Some(&converted))?;
-        self.written += 1;
+        self.written = slot + 1;
         self.drain()
+    }
+}
+
+impl FrameSink for Encoder {
+    fn write_frame(&mut self, frame: &Frame) -> Result<()> {
+        self.write_frame_at(frame, self.written)
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -1613,9 +1689,19 @@ impl FrameSink for Encoder {
                 }
             }
         }
-        self.output
-            .write_trailer()
-            .map_err(|error| ffi::fail("write trailer", &self.path, error))
+        // Straight to FFmpeg rather than through the wrapper, which takes
+        // anything but zero for a failure: the fragmenting muxer answers
+        // with the size of its last fragment, a success.
+        // SAFETY: the context is live and its header was written.
+        let written = unsafe { ffmpeg::sys::av_write_trailer(self.output.as_mut_ptr()) };
+        if written < 0 {
+            return Err(ffi::fail(
+                "write trailer",
+                &self.path,
+                ffmpeg::Error::from(written),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1821,6 +1907,77 @@ mod tests {
     /// A constant-bitrate export opens with each software encoder and comes
     /// out near the rate asked for. Noise, so the content costs more than
     /// the target and the encoder has to hold it rather than coast under.
+    /// A live file, finished properly: fragmented, and whole - it reads,
+    /// and says how long it is - with the software encoder and with the
+    /// machine's own where it has one.
+    #[test]
+    fn a_live_file_finishes_and_reads() {
+        for hardware in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "concat-media-live-{hardware}-{}.mp4",
+                std::process::id()
+            ));
+            let options = EncodeOptions {
+                preset: "veryfast".to_owned(),
+                hardware,
+                ..EncodeOptions::default()
+            };
+            let mut encoder =
+                Encoder::create_live(&path, 320, 180, FrameRate::THIRTY, &options).expect("opens");
+            let mut frame = Frame::black(320, 180);
+            for index in 0..150u32 {
+                frame.pixels_mut()[(index as usize * 4) % (320 * 180 * 4)] = 255;
+                encoder.write_frame(&frame).expect("writes");
+            }
+            let name = encoder.encoder_name();
+            encoder
+                .finish()
+                .unwrap_or_else(|error| panic!("{name} finishes: {error}"));
+            let summary = crate::probe(&path).expect("reads");
+            let _ = std::fs::remove_file(&path);
+            let seconds = summary.duration.map_or(0.0, |d| d.as_f64());
+            assert!((4.9..=5.1).contains(&seconds), "{name}: {seconds}s");
+        }
+    }
+
+    /// Frames written at slots with gaps between: the file lasts to the
+    /// last slot, and only the frames given were encoded.
+    #[test]
+    fn frames_written_at_slots_hold_over_the_gaps() {
+        // With the machine's own encoder too: the last picture, written
+        // long after the one before it, is where the file ends either way.
+        for hardware in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "concat-media-slots-{hardware}-{}.mp4",
+                std::process::id()
+            ));
+            let options = EncodeOptions {
+                preset: "veryfast".to_owned(),
+                hardware,
+                ..EncodeOptions::default()
+            };
+            let mut encoder =
+                Encoder::create_live(&path, 320, 180, FrameRate::THIRTY, &options).expect("opens");
+            let mut frame = Frame::black(320, 180);
+            for slot in (0..90).step_by(3) {
+                frame.pixels_mut()[slot as usize * 4] = 255;
+                encoder.write_frame_at(&frame, slot).expect("writes");
+            }
+            assert!(
+                encoder.write_frame_at(&frame, 10).is_err(),
+                "behind the last"
+            );
+            // Held to the tenth second, as a recording is held to Stop.
+            encoder.write_frame_at(&frame, 299).expect("writes");
+            let name = encoder.encoder_name();
+            encoder.finish().expect("finishes");
+            let summary = crate::probe(&path).expect("reads");
+            let _ = std::fs::remove_file(&path);
+            let seconds = summary.duration.map_or(0.0, |d| d.as_f64());
+            assert!((9.9..=10.1).contains(&seconds), "{name}: {seconds}s");
+        }
+    }
+
     #[test]
     fn a_cbr_export_opens_and_holds_its_rate() {
         let dir =
@@ -2247,6 +2404,7 @@ mod tests {
             tags,
             None,
             true,
+            false,
         )
         .expect("opens");
         assert_eq!(format, Pixel::NV12);
