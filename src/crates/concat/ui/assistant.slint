@@ -1,0 +1,580 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+
+// The assistant's panel at the right of the editor: a conversation with a
+// language model that edits the open project through JDStudio's own tools,
+// each step shown as it happens, and the settings for which model to use.
+
+import { I18n } from "i18n.slint";
+import { Theme } from "theme/theme.slint";
+import { Glyph, Icon } from "icons.slint";
+import { Button, Field } from "primitives/modal.slint";
+import { Select } from "primitives/select.slint";
+
+export struct ChatItem {
+    /// 0 the person, 1 the assistant, 2 a tool, 3 a problem, 4 a note.
+    kind: int,
+    text: string,
+    detail: string,
+    ok: bool,
+    running: bool,
+    picture: image,
+    has-picture: bool,
+}
+
+export struct AssistantData {
+    open: bool,
+    busy: bool,
+    settings-open: bool,
+    /// A provider, a model and (where needed) a key are set.
+    configured: bool,
+    project-open: bool,
+    provider: int,
+    model: string,
+    base-url: string,
+    has-key: bool,
+    needs-key: bool,
+    /// Where a key is made, for the hint.
+    key-page: string,
+    /// "Claude · claude-opus-5-5"
+    summary: string,
+    /// Connect: 0 not yet, 1 connecting, 2 connected, 3 failed.
+    connect-state: int,
+    /// What Connect found, or why it failed.
+    connect-message: string,
+    /// The chosen model's row in the fetched list, or -1.
+    model-index: int,
+    /// The address is asked for: a local or a custom provider.
+    show-address: bool,
+    /// Tokens so far, or empty.
+    usage: string,
+}
+
+component IconButton inherits Rectangle {
+    in property <Glyph> glyph;
+    in property <string> tip;
+    in property <bool> active;
+    callback clicked();
+
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: root.active ? Theme.field-active : touch.has-hover ? Theme.field-hover : transparent;
+
+    Icon {
+        glyph: root.glyph;
+        size: 15px;
+        tint: root.active ? Theme.accent : Theme.fg-muted;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// One step of the conversation.
+component Bubble inherits Rectangle {
+    in property <ChatItem> item;
+    in property <length> avail;
+
+    property <bool> mine: root.item.kind == 0;
+    property <bool> tool: root.item.kind == 2;
+
+    height: layout.preferred-height;
+
+    layout := HorizontalLayout {
+        alignment: root.mine ? end : start;
+
+        Rectangle {
+            max-width: root.mine ? root.avail * 0.85 : root.avail;
+            horizontal-stretch: root.mine ? 0 : 1;
+            border-radius: root.tool ? 6px : 10px;
+            background: root.mine ? Theme.accent
+                : root.item.kind == 3 ? Theme.danger-wash
+                : root.tool ? Theme.field
+                : transparent;
+            border-width: root.tool ? 1px : 0px;
+            border-color: Theme.line;
+
+            VerticalLayout {
+                padding-left: root.item.kind == 1 ? 2px : 10px;
+                padding-right: 10px;
+                padding-top: root.tool ? 6px : 8px;
+                padding-bottom: root.tool ? 6px : 8px;
+                spacing: 6px;
+
+                // A tool: its mark, its name, how it went.
+                if root.tool: HorizontalLayout {
+                    spacing: 6px;
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: root.item.running ? Theme.accent
+                                : root.item.ok ? Theme.green : Theme.danger;
+                        }
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.item.text;
+                        color: Theme.fg;
+                        font-size: Theme.fs-sm;
+                        font-family: Theme.font-technical;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    if root.item.running: Text {
+                        text: I18n.t("assistant.working");
+                        color: Theme.fg-muted;
+                        font-size: Theme.fs-sm;
+                    }
+                }
+
+                if root.item.detail != "": Text {
+                    text: root.item.detail;
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+
+                if !root.tool && root.item.text != "": Text {
+                    text: root.item.text;
+                    color: root.mine ? Theme.on-accent : root.item.kind == 3 ? Theme.danger : Theme.fg;
+                    font-size: Theme.fs;
+                    wrap: word-wrap;
+                }
+
+                if root.item.has-picture: Rectangle {
+                    height: self.width * 9 / 16;
+                    border-radius: 4px;
+                    clip: true;
+                    background: black;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.item.picture;
+                        image-fit: contain;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component AssistantPanel inherits Rectangle {
+    in property <AssistantData> data;
+    in property <[ChatItem]> items;
+    in property <[string]> providers;
+    in property <[string]> models;
+
+    callback send(text: string);
+    callback stop();
+    callback clear();
+    callback close();
+    callback toggle-settings();
+    callback provider-changed(index: int);
+    callback model-picked(index: int);
+    callback base-url-edited(text: string);
+    /// Save the key, when one was typed, and fetch the provider's models.
+    callback connect(key: string);
+    callback remove-key();
+    /// The left edge is being dragged: the width it asks for.
+    callback resized(width: length);
+    /// The drag is over: the width can be kept.
+    callback resize-done();
+
+    property <string> draft;
+    property <string> key-draft;
+
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    function submit() {
+        if (root.draft != "" && !root.data.busy && root.data.configured) {
+            root.send(root.draft);
+            root.draft = "";
+        }
+    }
+
+    VerticalLayout {
+        // ── the header ──
+        Rectangle {
+            height: 44px;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 8px;
+                spacing: 4px;
+
+                VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        glyph: Glyph.sparkle;
+                        size: 16px;
+                        tint: Theme.accent;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    padding-left: 6px;
+                    Text {
+                        text: I18n.t("assistant.title");
+                        color: Theme.fg;
+                        font-size: Theme.fs-lg;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.data.summary;
+                        color: Theme.fg-muted;
+                        font-size: Theme.fs-sm;
+                        overflow: elide;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        glyph: Glyph.reset;
+                        tip: I18n.t("assistant.newChat");
+                        clicked => { root.clear(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        glyph: Glyph.settings;
+                        tip: I18n.t("common.settings");
+                        active: root.data.settings-open;
+                        clicked => { root.toggle-settings(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        glyph: Glyph.close;
+                        tip: I18n.t("common.close");
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.line;
+            }
+        }
+
+        // ── settings: provider, key, Connect, then the model ──
+        if root.data.settings-open: Flickable {
+            vertical-stretch: 1;
+            content-height: form.preferred-height;
+
+            form := VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+
+                Text {
+                    text: I18n.t("assistant.stepProvider");
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-sm;
+                }
+                Select {
+                    options: root.providers;
+                    current: root.data.provider;
+                    enabled: root.data.connect-state != 1;
+                    changed(index) => { root.provider-changed(index); }
+                }
+
+                if root.data.show-address: Text {
+                    text: I18n.t("assistant.address");
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-sm;
+                }
+                if root.data.show-address: Field {
+                    value: root.data.base-url;
+                    placeholder: "http://localhost:11434/v1";
+                    technical: true;
+                    edited(text) => { root.base-url-edited(text); }
+                }
+
+                Text {
+                    text: root.data.needs-key ? I18n.t("assistant.stepKey") : I18n.t("assistant.apiKeyOptional");
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-sm;
+                }
+                Field {
+                    value: root.key-draft;
+                    placeholder: root.data.has-key ? I18n.t("assistant.keySaved") : I18n.t("assistant.pasteKey");
+                    secret: true;
+                    technical: true;
+                    edited(text) => { root.key-draft = text; }
+                }
+                if root.data.key-page != "": Text {
+                    text: I18n.t1("assistant.keyHint", root.data.key-page);
+                    color: Theme.fg-dim;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        horizontal-stretch: 0;
+                        primary: root.data.connect-state != 2;
+                        label: root.data.connect-state == 1 ? I18n.t("assistant.connecting")
+                            : root.data.connect-state == 2 ? I18n.t("assistant.reconnect")
+                            : I18n.t("assistant.connect");
+                        enabled: root.data.connect-state != 1
+                            && (root.key-draft != "" || root.data.has-key || !root.data.needs-key);
+                        clicked => {
+                            root.connect(root.key-draft);
+                            root.key-draft = "";
+                        }
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        text: root.data.connect-message;
+                        color: root.data.connect-state == 3 ? Theme.danger
+                            : root.data.connect-state == 2 ? Theme.green : Theme.fg-muted;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // The model, once the provider has said which it offers.
+                if root.data.connect-state == 2: Text {
+                    text: I18n.t("assistant.stepModel");
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-sm;
+                }
+                if root.data.connect-state == 2: Select {
+                    options: root.models;
+                    current: root.data.model-index;
+                    placeholder: I18n.t("assistant.pickModel");
+                    changed(index) => { root.model-picked(index); }
+                }
+
+                if root.data.has-key: HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        text: I18n.t("assistant.keyStored");
+                        color: Theme.fg-dim;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                    }
+                    Button {
+                        horizontal-stretch: 0;
+                        ghost: true;
+                        label: I18n.t("assistant.removeKey");
+                        clicked => { root.remove-key(); }
+                    }
+                }
+
+                Rectangle { height: 4px; }
+                Text {
+                    text: I18n.t("assistant.privacy");
+                    color: Theme.fg-dim;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+                Button {
+                    primary: true;
+                    label: I18n.t("assistant.startChatting");
+                    enabled: root.data.configured;
+                    clicked => { root.toggle-settings(); }
+                }
+            }
+        }
+
+        // ── the conversation ──
+        if !root.data.settings-open: scroller := Flickable {
+            vertical-stretch: 1;
+            content-width: root.width;
+            content-height: Math.max(self.height, chat.preferred-height);
+            // New steps scroll into view as they arrive.
+            changed content-height => {
+                self.content-y = Math.min(0px, self.height - self.content-height);
+            }
+
+            chat := VerticalLayout {
+                width: root.width;
+                padding: 12px;
+                spacing: 8px;
+                alignment: end;
+
+                if root.items.length == 0: VerticalLayout {
+                    spacing: 10px;
+                    padding-bottom: 24px;
+                    alignment: center;
+                    Text {
+                        text: root.data.configured ? I18n.t("assistant.emptyTitle") : I18n.t("assistant.setupTitle");
+                        color: Theme.fg;
+                        font-size: Theme.fs-lg;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.data.configured ? I18n.t("assistant.emptyNote") : I18n.t("assistant.setupNote");
+                        color: Theme.fg-muted;
+                        font-size: Theme.fs;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    if !root.data.configured: HorizontalLayout {
+                        alignment: center;
+                        Button {
+                            primary: true;
+                            label: I18n.t("assistant.setUp");
+                            clicked => { root.toggle-settings(); }
+                        }
+                    }
+                }
+
+                for item in root.items: Bubble {
+                    item: item;
+                    avail: root.width - 24px;
+                }
+            }
+        }
+
+        // ── the input ──
+        if !root.data.settings-open: Rectangle {
+            height: Math.min(160px, Math.max(52px, input.preferred-height + 24px)) + 30px;
+
+            Rectangle {
+                y: 0;
+                height: 1px;
+                background: Theme.line;
+            }
+
+            VerticalLayout {
+                padding: 10px;
+                spacing: 6px;
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: 8px;
+                    background: Theme.field;
+                    border-width: 1px;
+                    border-color: input.has-focus ? Theme.accent : Theme.line;
+                    clip: true;
+
+                    input := TextInput {
+                        x: 10px;
+                        y: 8px;
+                        width: parent.width - 52px;
+                        height: parent.height - 16px;
+                        text <=> root.draft;
+                        color: Theme.fg;
+                        font-size: Theme.fs;
+                        single-line: false;
+                        wrap: word-wrap;
+                        enabled: root.data.configured && root.data.project-open;
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.on-accent;
+                        key-pressed(event) => {
+                            // Enter sends; Shift+Enter is a new line.
+                            if (event.text == Key.Return && !event.modifiers.shift) {
+                                root.submit();
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+
+                    if root.draft == "": Text {
+                        x: 10px;
+                        y: 8px;
+                        width: parent.width - 56px;
+                        overflow: elide;
+                        text: !root.data.project-open ? I18n.t("assistant.openProjectFirst")
+                            : root.data.configured ? I18n.t("assistant.placeholder") : I18n.t("assistant.setupFirst");
+                        color: Theme.fg-dim;
+                        font-size: Theme.fs;
+                    }
+
+                    // Send, or Stop while it works.
+                    Rectangle {
+                        x: parent.width - self.width - 6px;
+                        y: parent.height - self.height - 6px;
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 8px;
+                        background: root.data.busy ? Theme.danger
+                            : root.draft != "" && root.data.configured ? Theme.accent : Theme.field-hover;
+                        Icon {
+                            glyph: root.data.busy ? Glyph.stop : Glyph.arrow-up-right;
+                            size: 14px;
+                            tint: root.data.busy || root.draft != "" ? Theme.on-accent : Theme.fg-muted;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if (root.data.busy) {
+                                    root.stop();
+                                } else {
+                                    root.submit();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 14px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.data.busy ? I18n.t("assistant.thinking") : I18n.t("assistant.undoHint");
+                        color: Theme.fg-dim;
+                        font-size: Theme.fs-sm;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.data.usage;
+                        color: Theme.fg-dim;
+                        font-size: Theme.fs-sm;
+                        font-family: Theme.font-technical;
+                    }
+                }
+            }
+        }
+    }
+
+    // The left edge: drag it to make the panel wider or narrower. Last, so
+    // it is over everything along that edge.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 6px;
+        height: root.height;
+        background: grip.pressed ? Theme.accent : grip.has-hover ? Theme.line-strong : transparent;
+
+        grip := TouchArea {
+            mouse-cursor: ew-resize;
+            // Each move asks for the width less how far the pointer is from
+            // where it was pressed; the edge follows, and the next move
+            // measures from there.
+            moved => {
+                if (self.pressed) {
+                    root.resized(Math.max(300px, Math.min(900px, root.width - (self.mouse-x - self.pressed-x))));
+                }
+            }
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.up) {
+                    root.resize-done();
+                }
+            }
+        }
+    }
+}

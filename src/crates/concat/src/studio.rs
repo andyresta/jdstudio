@@ -414,6 +414,14 @@ pub enum Edge {
     End,
 }
 
+/// A drag on one clip's volume envelope: the clip as the document held it
+/// when the press landed. Every move is drawn on the echo from this, and
+/// the release lands the difference as one undo step.
+pub struct EnvelopeDrag {
+    pub clip: String,
+    pub original: Clip,
+}
+
 /// Where one clip sat when a gesture began, so the whole set moves rigidly.
 pub struct MoveOrigin {
     pub clip: String,
@@ -675,6 +683,10 @@ pub struct Models {
     /// The screen recorder's microphones and cameras, "None" first.
     pub recorder_microphones: Rc<VecModel<SharedString>>,
     pub recorder_cameras: Rc<VecModel<SharedString>>,
+    /// The assistant's conversation, and its provider and model lists.
+    pub assistant_items: Rc<VecModel<crate::ui::ChatItem>>,
+    pub assistant_providers: Rc<VecModel<SharedString>>,
+    pub assistant_models: Rc<VecModel<SharedString>>,
     pub speech_sample_waves: Rc<VecModel<SharedString>>,
     pub speech_sample_details: Rc<VecModel<SharedString>>,
     /// The Audio page's shelves.
@@ -753,6 +765,9 @@ impl Models {
             voiceover_devices: Rc::new(VecModel::default()),
             recorder_microphones: Rc::new(VecModel::default()),
             recorder_cameras: Rc::new(VecModel::default()),
+            assistant_items: Rc::new(VecModel::default()),
+            assistant_providers: Rc::new(VecModel::default()),
+            assistant_models: Rc::new(VecModel::default()),
             speech_sample_waves: Rc::new(VecModel::default()),
             speech_sample_details: Rc::new(VecModel::default()),
             sounds_mine: Rc::new(VecModel::default()),
@@ -778,6 +793,26 @@ impl Models {
 
 /// Republish a list into a live model without resetting it: rows that did
 /// not change are not written, and the length changes a row at a time.
+/// `next` as a row's list of envelope points, in the model the row already
+/// holds when it has one: updated in place, the points a drag is holding
+/// keep the elements that draw them - a model swapped for a new one
+/// rebuilds them, and the point under the pointer would let go of it.
+fn points_model(
+    held: Option<&ModelRc<VolumePointData>>,
+    next: Vec<VolumePointData>,
+) -> ModelRc<VolumePointData> {
+    if next.is_empty() {
+        return ModelRc::default();
+    }
+    if let Some(held) = held
+        && let Some(model) = held.as_any().downcast_ref::<VecModel<VolumePointData>>()
+    {
+        sync(model, next);
+        return held.clone();
+    }
+    ModelRc::new(VecModel::from(next))
+}
+
 pub fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, next: Vec<T>) {
     let mut next = next;
     let shared = model.row_count().min(next.len());
@@ -883,6 +918,9 @@ pub struct Studio {
     /// The media the bin's menu was opened on, when it was the bin's menu
     /// and not a clip's: the two share one set of rows and one token.
     pub menu_media: Option<String>,
+    /// The volume point the menu was opened on - a clip and the key's
+    /// place in its ride - when it was a point's menu and not the clip's.
+    pub menu_volume_key: Option<(String, usize)>,
     pub menu_token: i32,
     /// The run of one kind of continuous message being folded into one
     /// line of the activity trail; see `note_activity`.
@@ -912,6 +950,9 @@ pub struct Studio {
     pub workspace: (f32, f32),
     pub divider_press: Option<(usize, f32, f32)>,
     pub gesture: Gesture,
+    /// A drag on a clip's volume envelope - a point, or the whole ride -
+    /// while it lasts; see `Studio::volume_key_dragged`.
+    pub envelope: Option<EnvelopeDrag>,
     /// The snap lines of a stage move in flight; empty between moves.
     pub stage_guides: Vec<StageGuideData>,
     /// Where the inspector should go, and a count that changes every time
@@ -1011,6 +1052,8 @@ pub struct Studio {
     pub voiceover: crate::panes::voiceover::VoiceoverPane,
     /// The screen recorder.
     pub recorder: crate::panes::recorder::RecorderPane,
+    /// The assistant's panel.
+    pub assistant: crate::panes::assistant::AssistantPane,
     /// Every speaker the voice engine offers, in its own order.
     /// The looks the Text page offers; see `presets`.
     pub text_presets: Vec<TextPreset>,
@@ -2295,6 +2338,7 @@ impl Studio {
             menu_bar_token: 0,
             menu_target: None,
             menu_media: None,
+            menu_volume_key: None,
             menu_token: 0,
             activity_burst: None,
             toast: ToastState::default(),
@@ -2311,6 +2355,7 @@ impl Studio {
             workspace: (0.0, 0.0),
             divider_press: None,
             gesture: Gesture::None,
+            envelope: None,
             stage_guides: Vec::new(),
             inspector_jump: (0, "", ""),
             media_jump: 0,
@@ -2340,6 +2385,7 @@ impl Studio {
             meters: crate::meters::MeterFeed::default(),
             voiceover: crate::panes::voiceover::VoiceoverPane::default(),
             recorder: crate::panes::recorder::RecorderPane::default(),
+            assistant: crate::panes::assistant::AssistantPane::default(),
             text_presets,
             installed_fonts: presets::installed_fonts(&host.dirs),
             system_fonts: Vec::new(),
@@ -2712,6 +2758,38 @@ impl Studio {
                 None
             }
         }
+    }
+
+    /// [`Studio::apply`] for the assistant: the same edit, but a refusal is
+    /// handed back for the model to read rather than shown as a notice, and
+    /// the whole view comes back, as the API answers.
+    pub fn apply_for_agent(
+        &mut self,
+        command: Command,
+    ) -> Result<concat_host::session::EditorView, concat_api::ApiError> {
+        self.end_burst();
+        log::info!("edit (assistant): {}", command_name(&command));
+        self.flush_commit();
+        self.echo = None;
+        self.last_commit = None;
+        let session = self.session.as_mut().ok_or_else(|| {
+            concat_api::ApiError::new(concat_api::ErrorCode::NotOpen, "no project is open")
+        })?;
+        match session.apply(command) {
+            Ok(view) => {
+                self.after_change();
+                Ok(view)
+            }
+            Err(error) => Err(concat_api::ApiError::new(
+                concat_api::ErrorCode::Refused,
+                error,
+            )),
+        }
+    }
+
+    /// What follows an edit the assistant made to the session directly.
+    pub fn after_agent_change(&mut self) {
+        self.after_change();
     }
 
     /// [`Studio::apply`] as one move of an inspector gesture: the same
@@ -7680,6 +7758,115 @@ impl Studio {
         self.clip_commit();
     }
 
+    /// The clip `id` as the document holds it, not as an echo draws it,
+    /// when its lane is not locked: what an envelope gesture starts from.
+    fn envelope_clip(&self, id: &str) -> Option<Clip> {
+        let clip = self.session.as_ref()?.project().active().clip(id)?;
+        (!self.locked(&clip.track_id)).then(|| clip.clone())
+    }
+
+    /// A double-click on clip `id`'s volume line, `at` along it: a point
+    /// there, at the volume the line already has.
+    pub fn volume_key_added(&mut self, id: &str, at: f32) {
+        self.flush_commit();
+        let Some(clip) = self.envelope_clip(id) else {
+            return;
+        };
+        if let Some(command) = crate::envelope::add(&clip, f64::from(at)) {
+            self.apply(command);
+        }
+    }
+
+    /// Point `index` of clip `id`'s ride taken off - a double-click on it,
+    /// or Delete from its menu.
+    pub fn volume_key_removed(&mut self, id: &str, index: usize) {
+        self.flush_commit();
+        let Some(clip) = self.envelope_clip(id) else {
+            return;
+        };
+        if let Some(command) = crate::envelope::remove(&clip, index) {
+            self.apply(command);
+        }
+    }
+
+    /// The envelope gesture on clip `id`, begun if this is its first move:
+    /// the echo it draws on, and the clip as it was.
+    fn envelope_begin(&mut self, id: &str) -> bool {
+        if self.envelope.as_ref().is_some_and(|drag| drag.clip == id) {
+            return true;
+        }
+        self.flush_commit();
+        let Some(original) = self.envelope_clip(id) else {
+            return false;
+        };
+        self.envelope = Some(EnvelopeDrag {
+            clip: id.to_owned(),
+            original,
+        });
+        true
+    }
+
+    /// Point `index` of clip `id`'s ride dragged toward `at` along the clip
+    /// and `gain`; held between its neighbours by `envelope::place`. Drawn
+    /// on the echo while the drag lasts, landed on release.
+    pub fn volume_key_dragged(&mut self, id: &str, index: usize, at: f32, gain: f32) {
+        if !self.envelope_begin(id) {
+            return;
+        }
+        self.begin_echo();
+        let (Some(drag), Some(echo)) = (self.envelope.as_ref(), self.echo.as_mut()) else {
+            return;
+        };
+        if let Some(clip) = echo.active_mut().clip_mut(id) {
+            crate::envelope::drag(clip, &drag.original, index, f64::from(at), f64::from(gain));
+        }
+        self.request_preview();
+    }
+
+    /// The line between clip `id`'s points dragged, held at `at`, to
+    /// `gain`: the whole ride goes up or down with it, each point by the
+    /// same number of decibels, the way the batch volume moves one - so a
+    /// duck keeps its shape and a point at silence stays silent.
+    pub fn volume_ride_dragged(&mut self, id: &str, at: f32, gain: f32) {
+        if !self.envelope_begin(id) {
+            return;
+        }
+        self.begin_echo();
+        let (Some(drag), Some(echo)) = (self.envelope.as_ref(), self.echo.as_mut()) else {
+            return;
+        };
+        if let Some(clip) = echo.active_mut().clip_mut(id) {
+            crate::batch_volume::set_level(
+                clip,
+                &drag.original,
+                f64::from(gain).clamp(0.0, crate::envelope::CEILING),
+                f64::from(at).clamp(0.0, 1.0),
+            );
+        }
+        self.request_preview();
+    }
+
+    /// The envelope let go: what the drag did, as one undo step - a point
+    /// moved in time is cleared and set again in one batch. A press that
+    /// never moved lands nothing.
+    pub fn volume_released(&mut self) {
+        let Some(drag) = self.envelope.take() else {
+            return;
+        };
+        let after = self
+            .echo
+            .as_ref()
+            .and_then(|echo| echo.active().clip(&drag.clip))
+            .cloned();
+        self.echo = None;
+        match after.and_then(|after| crate::envelope::commit(&drag.clip, &drag.original, &after)) {
+            Some(command) => {
+                self.apply(command);
+            }
+            None => self.request_preview(),
+        }
+    }
+
     /// The split tool pressed clip `id` at `seconds`: one cut, on the
     /// frame nearest the press, unless it is within a frame of either end
     /// or the lane is locked.
@@ -8454,6 +8641,11 @@ impl Studio {
                 pane.update(msg, self);
                 self.recorder = pane;
             }
+            crate::panes::Msg::Assistant(msg) => {
+                let mut pane = std::mem::take(&mut self.assistant);
+                pane.update(msg, self);
+                self.assistant = pane;
+            }
             crate::panes::Msg::Sounds(msg) => {
                 let mut pane = std::mem::take(&mut self.sounds);
                 pane.update(msg, self);
@@ -8891,6 +9083,14 @@ impl Studio {
         // Only the clips near the view: what the lanes show plus a screen
         // either side; see `TimelinePane::published_span`.
         let span = self.lanes.published_span();
+        // The envelope models each clip row already has, to be updated in
+        // place; see `points_model`.
+        let held: HashMap<SharedString, (ModelRc<VolumePointData>, ModelRc<VolumePointData>)> =
+            models
+                .clips
+                .iter()
+                .map(|row| (row.id, (row.volume_keys, row.volume_samples)))
+                .collect();
         sync(
             &models.clips,
             timeline
@@ -8910,8 +9110,27 @@ impl Studio {
                         } else {
                             Default::default()
                         };
+                    let samples = crate::envelope::samples(clip);
+                    let point = |(at, value): (f64, f64)| VolumePointData {
+                        at: at as f32,
+                        value: value as f32,
+                    };
+                    let id: SharedString = clip.id.as_str().into();
+                    let (held_keys, held_samples) = held.get(&id).cloned().unzip();
                     ClipData {
-                        id: clip.id.as_str().into(),
+                        volume_keys: points_model(
+                            held_keys.as_ref(),
+                            crate::envelope::keys(clip)
+                                .iter()
+                                .map(|key| point((key.at, key.value)))
+                                .collect(),
+                        ),
+                        volume_samples: points_model(
+                            held_samples.as_ref(),
+                            samples.iter().copied().map(point).collect(),
+                        ),
+                        volume_path: crate::envelope::path(&samples).into(),
+                        id,
                         name: clip.name.as_str().into(),
                         kind: kind_of(clip),
                         row: self.row_of(&clip.track_id),
@@ -10934,6 +11153,10 @@ impl Studio {
         );
         sync(&models.recorder_cameras, self.recorder.camera_rows());
         app.set_recorder(self.recorder.data());
+        sync(&models.assistant_items, self.assistant.item_rows());
+        sync(&models.assistant_providers, self.assistant.provider_rows());
+        sync(&models.assistant_models, self.assistant.model_rows(self));
+        app.set_assistant(self.assistant.data(self));
         editor.set_recording(self.voiceover.recording());
         editor.set_captions_open(self.captions.open);
         editor.set_speech_open(self.speech.open);
@@ -10983,6 +11206,22 @@ impl Studio {
     fn menu(&self) -> Vec<MenuItemData> {
         if let Some(id) = self.menu_media.as_deref() {
             return self.media_menu(id);
+        }
+        // A volume point's menu is the one row: what else a point is for
+        // is said by dragging it.
+        if let Some((id, _)) = self.menu_volume_key.as_ref() {
+            let locked = self.clip(id).is_none_or(|clip| self.locked(&clip.track_id));
+            return vec![MenuItemData {
+                id: "delete-volume-point".into(),
+                label: t("timeline.deleteVolumePoint").into(),
+                kind: MenuRow::Action,
+                glyph: Glyph::Trash,
+                shortcut: "".into(),
+                enabled: !locked,
+                danger: true,
+                checkable: false,
+                checked: false,
+            }];
         }
         let Some(clip) = self.menu_target.as_ref().and_then(|id| self.clip(id)) else {
             return Vec::new();

@@ -31,9 +31,11 @@ mod ui {
     slint::include_modules!();
 }
 
+mod assistant;
 mod batch_volume;
 mod chips;
 mod dock;
+mod envelope;
 mod fonts;
 mod format;
 mod gpu;
@@ -325,6 +327,10 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // https://github.com/jub0t/Concat/issues/320
     app.global::<Theme>()
         .set_ui_scale(studio.prefs.scale_index() as i32);
+    // The assistant panel opens at the width it was last dragged to.
+    if let Some(width) = studio.prefs.assistant_width {
+        app.set_assistant_width(width.clamp(300.0, 900.0));
+    }
 
     let shell = Rc::new(Shell {
         app: app.as_weak(),
@@ -404,6 +410,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         app.set_voiceover_devices(ModelRc::from(models.voiceover_devices.clone()));
         app.set_recorder_microphones(ModelRc::from(models.recorder_microphones.clone()));
         app.set_recorder_cameras(ModelRc::from(models.recorder_cameras.clone()));
+        app.set_assistant_items(ModelRc::from(models.assistant_items.clone()));
+        app.set_assistant_providers(ModelRc::from(models.assistant_providers.clone()));
+        app.set_assistant_models(ModelRc::from(models.assistant_models.clone()));
         app.set_app_menu_items(ModelRc::from(models.bar.clone()));
         app.set_transcribers(ModelRc::from(models.transcribers.clone()));
         app.set_voices(ModelRc::from(models.voices.clone()));
@@ -1079,6 +1088,37 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_clip_volume(on_lanes!(|state, id: SharedString, gain: f32| {
         state.clip_volume(&id, gain);
     }));
+    // The volume envelope: points put on, dragged and taken off the line.
+    editor.on_clip_volume_key_added(on_lanes!(|state, id: SharedString, at: f32| {
+        state.volume_key_added(&id, at);
+    }));
+    editor.on_clip_volume_key_dragged(on_lanes!(
+        |state, id: SharedString, index: i32, at: f32, gain: f32| {
+            if let Ok(index) = usize::try_from(index) {
+                state.volume_key_dragged(&id, index, at, gain);
+            }
+        }
+    ));
+    editor.on_clip_volume_ride(on_lanes!(|state, id: SharedString, at: f32, gain: f32| {
+        state.volume_ride_dragged(&id, at, gain);
+    }));
+    editor.on_clip_volume_released(on_lanes!(|state| {
+        state.volume_released();
+    }));
+    editor.on_clip_volume_key_removed(on_lanes!(|state, id: SharedString, index: i32| {
+        if let Ok(index) = usize::try_from(index) {
+            state.volume_key_removed(&id, index);
+        }
+    }));
+    editor.on_clip_volume_key_context(on_window!(|state, id: SharedString, index: i32| {
+        state.menu_token += 1;
+        state.menu_media = None;
+        state.menu_target = None;
+        state.menu_volume_key = usize::try_from(index)
+            .ok()
+            .filter(|_| state.clip(id.as_str()).is_some())
+            .map(|index| (id.to_string(), index));
+    }));
     editor.on_save_frame(on_window!(|state| {
         state.save_frame_as();
     }));
@@ -1490,6 +1530,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_clip_context(on_window!(|state, id: SharedString| {
         state.menu_token += 1;
         state.menu_media = None;
+        state.menu_volume_key = None;
         if state.clip(id.as_str()).is_none() {
             state.menu_target = None;
             return;
@@ -1504,12 +1545,19 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_media_context(on_window!(|state, row: i32| {
         state.menu_token += 1;
         state.menu_target = None;
+        state.menu_volume_key = None;
         state.menu_media = state
             .media
             .by_row(state.project(), row)
             .map(|item| item.id.clone());
     }));
     editor.on_menu_selected(on_window!(|state, action: SharedString| {
+        if let Some((id, index)) = state.menu_volume_key.take() {
+            if action.as_str() == "delete-volume-point" {
+                state.volume_key_removed(&id, index);
+            }
+            return;
+        }
         if let Some(id) = state.menu_media.clone() {
             state.media_action(&id, action.as_str());
             return;
@@ -1717,6 +1765,44 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_relink_dismiss(on_window!(|state| {
         state.handle(Msg::Relink(RelinkMsg::Dismiss));
     }));
+
+    // The assistant's panel: a chat that edits the open project.
+    {
+        use crate::panes::assistant::AssistantMsg;
+        app.on_assistant_toggle(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::Toggle));
+        }));
+        app.on_assistant_send(on_window!(|state, text: SharedString| {
+            state.handle(Msg::Assistant(AssistantMsg::Send(text.to_string())));
+        }));
+        app.on_assistant_stop(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::Stop));
+        }));
+        app.on_assistant_clear(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::Clear));
+        }));
+        app.on_assistant_toggle_settings(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::ToggleSettings));
+        }));
+        app.on_assistant_provider_changed(on_window!(|state, index: i32| {
+            state.handle(Msg::Assistant(AssistantMsg::Provider(index)));
+        }));
+        app.on_assistant_model_picked(on_window!(|state, index: i32| {
+            state.handle(Msg::Assistant(AssistantMsg::ModelPicked(index)));
+        }));
+        app.on_assistant_base_url_edited(on_window!(|state, text: SharedString| {
+            state.handle(Msg::Assistant(AssistantMsg::BaseUrl(text.to_string())));
+        }));
+        app.on_assistant_connect(on_window!(|state, key: SharedString| {
+            state.handle(Msg::Assistant(AssistantMsg::Connect(key.to_string())));
+        }));
+        app.on_assistant_remove_key(on_window!(|state| {
+            state.handle(Msg::Assistant(AssistantMsg::RemoveKey));
+        }));
+        app.on_assistant_resized(on_window!(|state, width: f32| {
+            state.handle(Msg::Assistant(AssistantMsg::Resized(width)));
+        }));
+    }
 
     // The screen recorder: from the launch screen it makes a new project,
     // from the editor's bin it records into the open one.
